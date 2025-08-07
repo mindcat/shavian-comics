@@ -1,0 +1,286 @@
+#!/usr/bin/env python3
+"""
+initializes shavian conversion tool
+"""
+
+import os
+import sys
+import requests
+from tqdm import tqdm
+from urllib.parse import urlparse
+import time
+import lzma
+import zipfile
+import tarfile
+import gzip
+import bz2
+
+# Hardcoded dictionary of URLs, paths, and descriptions
+DOWNLOADS = {
+    "https://huggingface.co/kitsumed/yolov8m_seg-speech-bubble/resolve/main/model.pt": {
+        "path": "./models/model.pt",
+        "description": "Machine vision model for identifying and cutting out speech bubbles.",
+        "extract": False
+    },
+    "https://dechifro.org/shavian/shaw.py": {
+        "path": "./shaw.py",
+        "description": "Shavian python engine for converting English -> Shavian, aided by dictionary (but surprisingly resilient with novel English words and names)",
+        "extract": False
+    },
+    "https://dechifro.org/shavian/amer.dict.xz": {
+        "path": "./dict/tmp/amer.dict.xz",
+        "description": "English -> Shavian phonemes as pronounced by an American",
+        "extract": True,
+        "extract_to": "./dict/"
+    },
+    "https://dechifro.org/shavian/brit.dict": {
+        "path": "./dict/brit.dict",
+        "description": "English -> Shavian phonemes as pronounced by a Brit (well, with an RP accent)",
+        "extract": False
+    },
+    "https://2gd4.me/tidbit/shavian-fonts/backlogshavian.otf": {
+        "path": "./fonts/backlogshavian.otf",
+        "description": "Font by Haley Halcyon ",
+        "extract": False
+    },
+    "https://2gd4.me/tidbit/shavian-fonts/stampatello-faceto.otf": {
+        "path": "./fonts/stampatello-faceto.otf",
+        "description": "Font by Haley Halcyon ",
+        "extract": False
+    },
+    "https://2gd4.me/tidbit/shavian-fonts/bantershaviantriline.otf": {
+        "path": "./fonts/bantershaviantriline.otf",
+        "description": "Font by Haley Halcyon ",
+        "extract": False
+    },
+    # format if more dependencies necessary (like hopefully a better ocr)
+    # "url": {
+    #     "path": "destination/as/path",
+    #     "description": "figure it out"
+    # }
+}
+
+def extract_file(file_path, extract_to=None):
+    """Extract compressed files based on their extension."""
+    if extract_to is None:
+        extract_to = os.path.dirname(file_path)
+
+    create_directory(extract_to)
+    file_name = os.path.basename(file_path)
+
+    try:
+        print(f"▸ Extracting {file_name}...")
+
+        if file_path.endswith('.xz'):
+            # Handle .xz files
+            with lzma.LZMAFile(file_path, 'rb') as compressed_file:
+                extracted_name = file_name[:-3]  # Remove .xz extension
+                extracted_path = os.path.join(extract_to, extracted_name)
+
+                with open(extracted_path, 'wb') as output_file:
+                    # Read in chunks for large files
+                    while chunk := compressed_file.read(8192):
+                        output_file.write(chunk)
+
+                print(f"✓ Extracted to: {extracted_path}")
+                return extracted_path
+
+        elif file_path.endswith('.tar.xz') or file_path.endswith('.txz'):
+            # Handle tar.xz files
+            with tarfile.open(file_path, 'r:xz') as tar:
+                tar.extractall(path=extract_to)
+                members = tar.getnames()
+                print(f"✓ Extracted {len(members)} files to: {extract_to}")
+                return extract_to
+
+        elif file_path.endswith('.zip'):
+            # Handle zip files
+            with zipfile.ZipFile(file_path, 'r') as zip_ref:
+                zip_ref.extractall(extract_to)
+                print(f"✓ Extracted zip to: {extract_to}")
+                return extract_to
+
+        elif file_path.endswith('.tar.gz') or file_path.endswith('.tgz'):
+            # Handle tar.gz files
+            with tarfile.open(file_path, 'r:gz') as tar:
+                tar.extractall(path=extract_to)
+                members = tar.getnames()
+                print(f"✓ Extracted {len(members)} files to: {extract_to}")
+                return extract_to
+
+        elif file_path.endswith('.tar.bz2') or file_path.endswith('.tbz2'):
+            # Handle tar.bz2 files
+            with tarfile.open(file_path, 'r:bz2') as tar:
+                tar.extractall(path=extract_to)
+                members = tar.getnames()
+                print(f"✓ Extracted {len(members)} files to: {extract_to}")
+                return extract_to
+
+        elif file_path.endswith('.tar'):
+            # Handle tar files
+            with tarfile.open(file_path, 'r:') as tar:
+                tar.extractall(path=extract_to)
+                members = tar.getnames()
+                print(f"✓ Extracted {len(members)} files to: {extract_to}")
+                return extract_to
+
+        elif file_path.endswith('.gz'):
+            # Handle gzip files (single file compression)
+            with gzip.open(file_path, 'rb') as compressed_file:
+                extracted_name = file_name[:-3]  # Remove .gz extension
+                extracted_path = os.path.join(extract_to, extracted_name)
+
+                with open(extracted_path, 'wb') as output_file:
+                    while chunk := compressed_file.read(8192):
+                        output_file.write(chunk)
+
+                print(f"✓ Extracted to: {extracted_path}")
+                return extracted_path
+
+        elif file_path.endswith('.bz2'):
+            # Handle bzip2 files
+            with bz2.BZ2File(file_path, 'rb') as compressed_file:
+                extracted_name = file_name[:-4]  # Remove .bz2 extension
+                extracted_path = os.path.join(extract_to, extracted_name)
+
+                with open(extracted_path, 'wb') as output_file:
+                    while chunk := compressed_file.read(8192):
+                        output_file.write(chunk)
+
+                print(f"✓ Extracted to: {extracted_path}")
+                return extracted_path
+
+        else:
+            print(f"▲ Unsupported archive format: {file_name}")
+            return None
+
+    except Exception as e:
+        print(f"✗ Error extracting {file_name}: {e}")
+        return None
+    """Create directory if it doesn't exist."""
+    directory = os.path.dirname(file_path)
+    if directory and not os.path.exists(directory):
+        os.makedirs(directory)
+        print(f"Created directory: {directory}")
+
+def create_directory(file_path):
+    """Create directory if it doesn't exist."""
+    directory = os.path.dirname(file_path)
+    if directory and not os.path.exists(directory):
+        os.makedirs(directory)
+        print(f"Created directory: {directory}")
+
+def download_file(url, file_path, description, should_extract=False, extract_to=None):
+    """Download a file with progress bar."""
+    try:
+        print(f"\n▶ {description}")
+        print(f"▸ URL: {url}")
+        print(f"▸ Path: {file_path}")
+
+        # Create directory if needed
+        create_directory(file_path)
+
+        # Start the download
+        response = requests.get(url, stream=True)
+        response.raise_for_status()
+
+        # Get file size
+        total_size = int(response.headers.get('content-length', 0))
+
+        # Setup progress bar
+        progress_bar = tqdm(
+            total=total_size,
+            unit='B',
+            unit_scale=True,
+            unit_divisor=1024,
+            desc=f"Downloading {os.path.basename(file_path)}",
+            ncols=80
+        )
+
+        # Download and write file
+        with open(file_path, 'wb') as file:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    file.write(chunk)
+                    progress_bar.update(len(chunk))
+
+        progress_bar.close()
+        print(f"✓ Successfully downloaded: {file_path}")
+
+        # Extract if requested
+        if should_extract:
+            extracted_path = extract_file(file_path, extract_to)
+            if extracted_path:
+                print("▸ Archive extracted successfully")
+                # Optionally remove the archive after extraction
+                os.remove(file_path)
+                print(f"▸ Removed archive: {file_path}")
+
+        return True
+
+    except requests.RequestException as e:
+        print(f"✗ Error downloading {url}: {e}")
+        return False
+    except IOError as e:
+        print(f"✗ Error writing file {file_path}: {e}")
+        return False
+    except Exception as e:
+        print(f"✗ Unexpected error: {e}")
+        return False
+
+def main():
+    """Main function to download all files."""
+    print("▸ File Downloader Started")
+    print("=" * 50)
+
+    if not DOWNLOADS:
+        print("✗ No downloads configured!")
+        return
+
+    successful = 0
+    failed = 0
+
+    for url, config in DOWNLOADS.items():
+        file_path = config["path"]
+        description = config["description"]
+        should_extract = config.get("extract", False)
+        extract_to = config.get("extract_to", None)
+
+        # Check if file already exists
+        if os.path.exists(file_path):
+            response = input(f"\n▲ File '{file_path}' already exists. Overwrite? (y/N): ").strip().lower()
+            if response not in ['y', 'yes']:
+                print(f"▷ Skipping {file_path}")
+                continue
+
+        # Download the file
+        if download_file(url, file_path, description, should_extract, extract_to):
+            successful += 1
+        else:
+            failed += 1
+
+        # Small delay between downloads to be respectful
+        if len(DOWNLOADS) > 1:
+            time.sleep(0.5)
+
+    # Summary
+    print("\n" + "=" * 50)
+    print("▸ Download Summary:")
+    print(f"   ✓ Successful: {successful}")
+    print(f"   ✗ Failed: {failed}")
+    print(f"   ▸ Total files: {len(DOWNLOADS)}")
+
+    if failed == 0:
+        print("◆ All downloads completed successfully!")
+    else:
+        print("▲ Some downloads failed. Check the errors above.")
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n\n◾ Download interrupted by user")
+        sys.exit(1)
+    except Exception as e:
+        print(f"\n✗ Fatal error: {e}")
+        sys.exit(1)

@@ -39,14 +39,14 @@ except Exception as e:
 
 # Optional: Display images in notebook
 # %matplotlib inline
-import matplotlib.pyplot as plt
+# import matplotlib.pyplot as plt
 
 # --- Directories ---
 INPUT_DIR = Path("img/in")
-TEMP_DIR = Path("img/temp") # For intermediate bubble images (optional use)
+TEMP_DIR = Path("img/tmp") # For intermediate bubble images (optional use)
 OUTPUT_DIR = Path("img/out")
 MODEL_DIR = Path("models")
-FONT_DIR = Path("fonts") # Directory containing the .ttf font file
+FONT_DIR = Path("fonts") # Directory containing the .otf font file
 DICT_DIR = Path("dict") # Directory containing the dictionary for shaw.py
 
 # --- Model ---
@@ -64,7 +64,9 @@ SHAW_SCRIPT_PATH = "shaw.py" # Assuming it's in the same dir as the notebook or 
 SHAW_DICT_PATH = DICT_DIR / "amer.dict"
 
 # --- Font ---
-SHAVIAN_FONT_NAME = "backlogshavian.otf" # The actual font file name
+# SHAVIAN_FONT_NAME = "backlogshavian.otf"
+SHAVIAN_FONT_NAME = "stampatello-faceto.otf"
+# SHAVIAN_FONT_NAME = "bantershaviantriline.otf"
 SHAVIAN_FONT_PATH = FONT_DIR / SHAVIAN_FONT_NAME
 DEFAULT_FONT_SIZE = 10 # Starting font size (might need adjustment)
 
@@ -80,7 +82,7 @@ FILL_COLOR = (255, 255, 255, 255)
 CLEAR_TEMP_DIR = False
 
 
-def segment_speech_bubbles(image_path, model):
+def segment_speech_bubbles(image_path, model, expected_count):
     """
     Detects speech bubbles in an image using the loaded YOLO model.
 
@@ -100,6 +102,8 @@ def segment_speech_bubbles(image_path, model):
     if not results or not results[0].masks:
         print(f"No masks found in results for {image_path.name}")
         return []
+
+
 
     # Process masks from the first result object
     res = results[0]
@@ -220,7 +224,7 @@ def perform_ocr(bubble_image, sym_spell_instance):
         # text = pytesseract.image_to_string(bubble_image, lang='eng', config=custom_config)
         reader =  easyocr.Reader(['en'])
         bubble_image_np = np.array(bubble_image)
-        allowlist_chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ.,!?' "
+        allowlist_chars = "0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ.,!?'"
         results = reader.readtext(bubble_image_np, allowlist=allowlist_chars, detail=0, paragraph=True)
         text = ' '.join(results).lower()
 
@@ -341,12 +345,12 @@ def draw_shavian_text_in_bubble(draw, bubble_info, shavian_text, font):
     if not words:
         print("  Skipping text drawing: Text contains no words.")
         return
-    
+
     C = 0.4
-    
+
     smart_font_size = C * math.sqrt((bubble_width * bubble_height) / len(words))
     smart_font_size = max(DEFAULT_FONT_SIZE, smart_font_size)
-    
+
     font = ImageFont.truetype(font, smart_font_size)
 
     lines = []
@@ -467,7 +471,7 @@ def main():
         print(f"Error loading model: {e}")
         # You might want to stop execution here if the model fails to load
         raise e
-    
+
     try:
         shavian_font = str(SHAVIAN_FONT_PATH)
         print(f"Loaded font: {SHAVIAN_FONT_PATH} with size {DEFAULT_FONT_SIZE}")
