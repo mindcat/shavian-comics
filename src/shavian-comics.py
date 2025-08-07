@@ -570,7 +570,7 @@ def main():
 
                 # Now draw the text on top of the filled area
                 # Re-create draw object if needed after paste? Usually not necessary.
-                draw_shavian_text_in_bubble(draw, bubble_info, original_text, shavian_font)
+                draw_shavian_text_in_bubble(draw, bubble_info, shavian_text, shavian_font)
 
 
             # --- Step 6: Save Output Image ---
