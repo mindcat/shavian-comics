@@ -14,28 +14,35 @@ import numpy as np
 from ultralytics import YOLO # Preferred for running .pt files
 
 # OCR
-import pytesseract # Requires tesseract executable install
-import easyocr
-from autocorrect import Speller
-import nltk
-nltk.download('words')
-word_list = set(nltk.corpus.words.words())
+from transformers import AutoModelForCausalLM, AutoTokenizer
+ocr_model = AutoModelForCausalLM.from_pretrained(
+    "vikhyatk/moondream2",
+    revision="2025-06-21",
+    trust_remote_code=True,
+    device_map={"": "mps"}  # ...or 'mps', on Apple Silicon
+)
+# import pytesseract # Requires tesseract executable install
+# import easyocr
+# from autocorrect import Speller
+# import nltk
 # nltk.download('words')
-from symspellpy import SymSpell, Verbosity
-# Initialize SymSpell
-sym_spell = SymSpell(max_dictionary_edit_distance=2, prefix_length=7)
-# Define path to your downloaded dictionary
-dictionary_path = "dict/frequency_dictionary_en_82_765.txt"
-# Load the dictionary
-try:
-    if not sym_spell.load_dictionary(dictionary_path, term_index=0, count_index=1):
-        print(f"Error: Dictionary file not found or failed to load from {dictionary_path}")
-        # Handle error appropriately - maybe raise an exception or set sym_spell to None
-        raise FileNotFoundError(f"SymSpell dictionary not found at {dictionary_path}")
-    print("SymSpell dictionary loaded successfully.")
-except Exception as e:
-    print(f"An unexpected error occurred loading the SymSpell dictionary: {e}")
-    raise e
+# word_list = set(nltk.corpus.words.words())
+# # nltk.download('words')
+# from symspellpy import SymSpell, Verbosity
+# # Initialize SymSpell
+# sym_spell = SymSpell(max_dictionary_edit_distance=2, prefix_length=7)
+# # Define path to your downloaded dictionary
+# dictionary_path = "dict/frequency_dictionary_en_82_765.txt"
+# # Load the dictionary
+# try:
+#     if not sym_spell.load_dictionary(dictionary_path, term_index=0, count_index=1):
+#         print(f"Error: Dictionary file not found or failed to load from {dictionary_path}")
+#         # Handle error appropriately - maybe raise an exception or set sym_spell to None
+#         raise FileNotFoundError(f"SymSpell dictionary not found at {dictionary_path}")
+#     print("SymSpell dictionary loaded successfully.")
+# except Exception as e:
+#     print(f"An unexpected error occurred loading the SymSpell dictionary: {e}")
+#     raise e
 
 # Optional: Display images in notebook
 # %matplotlib inline
@@ -54,18 +61,13 @@ DICT_DIR = Path("dict") # Directory containing the dictionary for shaw.py
 MODEL_NAME = "model.pt" # Or .onnx if using ONNX runtime
 MODEL_PATH = MODEL_DIR / MODEL_NAME # Adjust subdirs as needed
 
-# --- OCR ---
-# Set this if tesseract is not in your system PATH
-# TESSERACT_CMD = r'/path/to/your/tesseract.exe' # Example for Windows
-# pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
-
 # --- Transliteration Script ---
 SHAW_SCRIPT_PATH = "shaw.py" # Assuming it's in the same dir as the notebook or PATH
 SHAW_DICT_PATH = DICT_DIR / "amer.dict"
 
 # --- Font ---
-# SHAVIAN_FONT_NAME = "backlogshavian.otf"
-SHAVIAN_FONT_NAME = "stampatello-faceto.otf"
+SHAVIAN_FONT_NAME = "backlogshavian.otf"
+# SHAVIAN_FONT_NAME = "stampatello-faceto.otf"
 # SHAVIAN_FONT_NAME = "bantershaviantriline.otf"
 SHAVIAN_FONT_PATH = FONT_DIR / SHAVIAN_FONT_NAME
 DEFAULT_FONT_SIZE = 10 # Starting font size (might need adjustment)
@@ -95,7 +97,32 @@ def segment_speech_bubbles(image_path, model, expected_count):
                     'bbox': A tuple (x1, y1, x2, y2) for the bounding box.
                     'confidence': Detection confidence score.
     """
-    results = model(str(image_path), conf=CONFIDENCE_THRESHOLD)
+
+    confidence = 0.9
+    low, high = 0.01, 0.99
+
+
+    results = model(str(image_path), conf=confidence)
+    if len(results) < expected_count:
+        high = confidence
+    else:
+        low = confidence
+
+    # Binary search loop
+    for _ in range(10):  # Usually converges quickly
+        confidence = (low + high) / 2
+        results = model(str(image_path), conf=confidence)
+        actual_count = len(results)
+
+        if actual_count == expected_count:
+            print(f"Found {actual_count} speech bubbles...")
+            break
+
+        if actual_count < expected_count:
+            high = confidence
+        else:
+            low = confidence
+
     detected_bubbles = []
 
     # Results is a list (usually length 1 for single image)
@@ -203,7 +230,7 @@ def extract_bubble_region(original_image, bubble_info):
 
     return final
 
-def perform_ocr(bubble_image, sym_spell_instance):
+def perform_ocr(bubble_image):
     """
     Performs OCR on an image, likely containing speech bubble text.
 
@@ -217,52 +244,10 @@ def perform_ocr(bubble_image, sym_spell_instance):
     if bubble_image is None:
         return ""
     try:
-        # Use Page Segmentation Mode (PSM) 6: Assume a single uniform block of text.
-        # Adjust PSM if needed (e.g., 3 for fully automatic, 11 for sparse text)
-        # custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=01234567890ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.!\'\"\ '
-        # # custom_config = r'--oem 3 --psm 6'
-        # text = pytesseract.image_to_string(bubble_image, lang='eng', config=custom_config)
-        reader =  easyocr.Reader(['en'])
-        bubble_image_np = np.array(bubble_image)
-        allowlist_chars = "0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ.,!?'"
-        results = reader.readtext(bubble_image_np, allowlist=allowlist_chars, detail=0, paragraph=True)
-        text = ' '.join(results).lower()
-
-        # text = ' '.join(text.split()).lower()
-        print(f"  OCR Result: '{text}'")
-        spell = Speller(only_replacements=True)
-        corrected_text = spell(text)
-        print(f"  Autocorrect: '{corrected_text}'")
-
-
-        # corrected_text = corrected_text.split()
-        # valid_words = [word for word in corrected_text if word in word_list]
-        # corrected_text = ' '.join(valid_words)
-        # print(f"  Nonsense dropped: '{corrected_text}'")
-
-        if sym_spell_instance:
-            # Use lookup_compound for potentially better handling of combined words
-            # max_edit_distance=2 allows for corrections within 2 edits (adjust as needed)
-            suggestions = sym_spell_instance.lookup_compound(corrected_text, max_edit_distance=2)
-
-            # Get the top suggestion
-            if suggestions:
-                corrected_text = suggestions[0].term
-                print(f"  SymSpell Corrected: '{corrected_text}'")
-                return corrected_text
-            else:
-                print("  SymSpell: No correction suggestion found.")
-                return corrected_text # Return raw text if no suggestion
-        else:
-            # If sym_spell object wasn't passed or failed to initialize
-            print("  SymSpell: Corrector not available, returning raw OCR text.")
-            return corrected_text
-
-
-        return corrected_text
-    except pytesseract.TesseractNotFoundError:
-        print("ERROR: Tesseract executable not found. Please install Tesseract or set TESSERACT_CMD.")
-        raise # Stop execution if Tesseract isn't configured
+        # let's try ALL machine vision OCR, because getting tesseract working sucked for edge cases
+        result = ocr_model.query(bubble_image, "Transcribe the text, all lowercase unless it is a proper name or place. If it doesn't seem like a sentence, return an empty string.")["answer"]
+        print(f"  Moondream OCR Result: '{result}'")
+        return result
     except Exception as e:
         print(f"  Error during OCR: {e}")
         return ""
@@ -495,8 +480,11 @@ def main():
             # Load the original image
             original_image = Image.open(image_path).convert("RGBA") # Convert to RGBA for alpha compositing
 
+            # use moondream to make this automatic
+            estimated_speech_bubbles = 3
+
             # --- Step 1: Detect Speech Bubbles ---
-            detected_bubbles = segment_speech_bubbles(image_path, model)
+            detected_bubbles = segment_speech_bubbles(image_path, model, estimated_speech_bubbles)
 
             if not detected_bubbles:
                 print("  No speech bubbles detected. Skipping.")
@@ -526,7 +514,7 @@ def main():
                     continue
 
                 # --- Step 3: Perform OCR ---
-                original_text = perform_ocr(bubble_image_for_ocr, sym_spell)
+                original_text = perform_ocr(bubble_image_for_ocr)
 
                 if not original_text:
                     print("  No text found by OCR. Skipping transliteration for this bubble.")
@@ -582,7 +570,7 @@ def main():
 
                 # Now draw the text on top of the filled area
                 # Re-create draw object if needed after paste? Usually not necessary.
-                draw_shavian_text_in_bubble(draw, bubble_info, shavian_text, shavian_font)
+                draw_shavian_text_in_bubble(draw, bubble_info, original_text, shavian_font)
 
 
             # --- Step 6: Save Output Image ---
@@ -605,22 +593,6 @@ def main():
             # Consider adding more specific error handling (e.g., for PIL errors, OCR errors)
 
     print("\n--- Pipeline Finished ---")
-
-    # try:
-    #     output_files = list(OUTPUT_DIR.glob('*_shavian.png'))
-    #     if output_files:
-    #         print(f"Displaying sample output: {output_files[0].name}")
-    #         display_img = Image.open(output_files[0])
-    #         plt.figure(figsize=(12, 12))
-    #         plt.imshow(display_img)
-    #         plt.axis('off')
-    #         plt.show()
-    #     else:
-    #         print("No output files found to display.")
-    # except Exception as e:
-    #     print(f"Could not display output image: {e}")
-
-
 
 if __name__ == "__main__":
     main()
