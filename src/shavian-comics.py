@@ -75,6 +75,7 @@ DEFAULT_FONT_SIZE = 10 # Starting font size (might need adjustment)
 # --- Other Settings ---
 # Confidence threshold for bubble detection (adjust as needed)
 CONFIDENCE_THRESHOLD = 0.5
+IOU_THRESH = 0.8
 # Padding around detected bounding boxes when extracting/drawing
 PADDING = 5
 # Background color to fill bubbles before drawing Shavian text (RGBA)
@@ -83,6 +84,9 @@ FILL_COLOR = (255, 255, 255, 255)
 # Set to True to clear the temp directory each run
 CLEAR_TEMP_DIR = False
 
+def count_speech_bubbles(image):
+    result = ocr_model.detect(image, "enclosed speech bubbles")["objects"]
+    return len(result)
 
 def segment_speech_bubbles(image_path, model, expected_count):
     """
@@ -97,22 +101,16 @@ def segment_speech_bubbles(image_path, model, expected_count):
                     'bbox': A tuple (x1, y1, x2, y2) for the bounding box.
                     'confidence': Detection confidence score.
     """
-
     confidence = 0.9
     low, high = 0.01, 0.99
-
-
-    results = model(str(image_path), conf=confidence)
-    if len(results) < expected_count:
-        high = confidence
-    else:
-        low = confidence
+    results = None
 
     # Binary search loop
-    for _ in range(10):  # Usually converges quickly
-        confidence = (low + high) / 2
-        results = model(str(image_path), conf=confidence)
-        actual_count = len(results)
+    for i in range(10):  # Usually converges quickly
+        results = model(str(image_path), conf=confidence, iou=IOU_THRESH)
+        print(results[0].boxes.conf)
+        actual_count = len(results[0].boxes.conf)
+        print(f"\nactual count ?= estimated count <- confidence\n{actual_count} ?= {expected_count} <- {confidence}")
 
         if actual_count == expected_count:
             print(f"Found {actual_count} speech bubbles...")
@@ -122,6 +120,7 @@ def segment_speech_bubbles(image_path, model, expected_count):
             high = confidence
         else:
             low = confidence
+        confidence = (low + high) / 2
 
     detected_bubbles = []
 
@@ -129,8 +128,6 @@ def segment_speech_bubbles(image_path, model, expected_count):
     if not results or not results[0].masks:
         print(f"No masks found in results for {image_path.name}")
         return []
-
-
 
     # Process masks from the first result object
     res = results[0]
@@ -145,8 +142,8 @@ def segment_speech_bubbles(image_path, model, expected_count):
         print(f"Found {len(masks_data)} potential masks.")
 
         for i, mask_np in enumerate(masks_data):
-            if confs_data[i] < CONFIDENCE_THRESHOLD:
-                continue # Skip low confidence detections
+            # if confs_data[i] < CONFIDENCE_THRESHOLD:
+            #     continue # Skip low confidence detections
 
             # Ensure mask is binary (0 or 255) and correct size
             # Ultralytics masks are often normalized or directly binary
@@ -245,7 +242,7 @@ def perform_ocr(bubble_image):
         return ""
     try:
         # let's try ALL machine vision OCR, because getting tesseract working sucked for edge cases
-        result = ocr_model.query(bubble_image, "Transcribe the text, all lowercase unless it is a proper name or place. If it doesn't seem like a sentence, return an empty string.")["answer"]
+        result = ocr_model.query(bubble_image, "Transcribe the text, all lowercase unless it is a proper name or place. If it isn't actual text, return an empty string.")["answer"]
         print(f"  Moondream OCR Result: '{result}'")
         return result
     except Exception as e:
@@ -481,7 +478,9 @@ def main():
             original_image = Image.open(image_path).convert("RGBA") # Convert to RGBA for alpha compositing
 
             # use moondream to make this automatic
-            estimated_speech_bubbles = 3
+            estimated_speech_bubbles = count_speech_bubbles(original_image)
+
+            print(f"Moondream found {estimated_speech_bubbles} speech bubbles.")
 
             # --- Step 1: Detect Speech Bubbles ---
             detected_bubbles = segment_speech_bubbles(image_path, model, estimated_speech_bubbles)
@@ -555,18 +554,31 @@ def main():
                         # Use the original FILL_COLOR or a default white
                         calculated_fill_color = (255, 255, 255, 255)
 
+                    mask_np = np.array(fill_mask)
+                    binary_mask = Image.fromarray((mask_np > 128).astype(np.uint8) * 255, mode='L')
+
+                    # Create inset by using erosion-like effect with filters
+                    # Apply minimum filter multiple times to shrink the mask
+                    inset_pixels = 3
+                    blur_radius = 2
+                    inset_mask = binary_mask
+                    for _ in range(inset_pixels):
+                        inset_mask = inset_mask.filter(ImageFilter.MinFilter(size=3))
+
+                    # Apply Gaussian blur for smoothing and gradient effect
+                    smooth_mask = inset_mask.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+
                 except Exception as e:
                     # Fallback in case of any error during color calculation
                     print(f"  Error calculating mode color: {e}. Defaulting fill to white.")
                     calculated_fill_color = (255, 255, 255, 255) # Use the original FILL_COLOR or a default white
-
                 # --- Fill the bubble area on the output image using the calculated mode color ---
                 # Create a solid fill color image matching the output image's mode and size
                 # Use the dynamically determined 'calculated_fill_color'
                 fill_img = Image.new(output_image.mode, output_image.size, calculated_fill_color)
                 # Paste the solid fill color onto the output image, but only where the mask is white
                 # The fill_mask (single channel 'L' mode) correctly masks the paste operation
-                output_image.paste(fill_img, (0, 0), fill_mask)
+                output_image.paste(fill_img, (0, 0), smooth_mask)
 
                 # Now draw the text on top of the filled area
                 # Re-create draw object if needed after paste? Usually not necessary.
@@ -577,13 +589,6 @@ def main():
             output_filename = OUTPUT_DIR / f"{image_path.stem}_shavian.png" # Save as PNG to keep transparency
             output_image.save(output_filename)
             print(f"\nSaved modified image to: {output_filename}")
-
-            # Optional: Display results in notebook
-            # plt.figure(figsize=(10, 10))
-            # plt.imshow(output_image)
-            # plt.title(f"Output: {output_filename.name}")
-            # plt.axis('off')
-            # plt.show()
 
 
         except FileNotFoundError:
