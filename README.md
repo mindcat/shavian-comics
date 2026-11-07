@@ -3,7 +3,15 @@ Convert comics with speech bubbles (primarily Calvin & Hobbes) from English (Lat
 
 ## set-up
 
-`git pull` the main branch and run the initialization script `init.py` to grab the necessary local dependencies automatically (.dict dictionaries from dechifro, the incredible shavian translation engine in python also by dechifro, the .pt machine vision model by kitsumed responsible for identifying our text bubbles, and comic-esque fonts from Haley Wakamatsu)
+Install [uv](https://docs.astral.sh/uv/), then:
+
+```sh
+uv sync                                  # Python 3.12 + dependencies (CUDA PyTorch on Linux/Windows)
+uv run python src/init.py                # download the speech-bubble model, dictionaries and fonts
+uv run python src/shavian-comics.py      # convert everything in src/img/in/ into src/img/out/
+```
+
+`init.py` grabs the .dict dictionaries from dechifro, the .pt machine vision model by kitsumed responsible for identifying our text bubbles, and comic-esque fonts from Haley Wakamatsu. The model and fonts are checked against pinned SHA-256 checksums. dechifro's incredible Shavian translation engine, `shaw.py`, is vendored in `src/` at a version tested with this pipeline. The first run also downloads the moondream2 OCR model (~4 GB) from Hugging Face.
 
 ## credit/dependecies & appreciation
 

@@ -14,17 +14,17 @@ import zipfile
 import tarfile
 import gzip
 import bz2
+import hashlib
 
-# Hardcoded dictionary of URLs, paths, and descriptions
+# Hardcoded dictionary of URLs, paths, and descriptions.
+# Files with a "sha256" are pinned: a download that doesn't match is rejected.
+# The dictionaries aren't pinned because dechifro adds words to them regularly.
+# shaw.py isn't downloaded: src/shaw.py is a vendored copy tested with this pipeline.
 DOWNLOADS = {
     "https://huggingface.co/kitsumed/yolov8m_seg-speech-bubble/resolve/main/model.pt": {
         "path": "./models/model.pt",
+        "sha256": "200141c44d4153662050531905ec3354d1d6302c28939dbbb019c037250ed610",
         "description": "Machine vision model for identifying and cutting out speech bubbles.",
-        "extract": False
-    },
-    "https://dechifro.org/shavian/shaw.py": {
-        "path": "./shaw.py",
-        "description": "Shavian python engine for converting English -> Shavian, aided by dictionary (but surprisingly resilient with novel English words and names)",
         "extract": False
     },
     "https://dechifro.org/shavian/amer.dict.xz": {
@@ -40,16 +40,19 @@ DOWNLOADS = {
     },
     "https://2gd4.me/tidbit/shavian-fonts/backlogshavian.otf": {
         "path": "./fonts/backlogshavian.otf",
+        "sha256": "9575619c156fadd005dc2aac065c3a780738c86563ac5c4d3ccd390b038339ec",
         "description": "Font by Haley Halcyon ",
         "extract": False
     },
     "https://2gd4.me/tidbit/shavian-fonts/stampatello-faceto.otf": {
         "path": "./fonts/stampatello-faceto.otf",
+        "sha256": "837b02be56e4da23b4757eb16656a6c9dac4a4174e2a403cda7a49016fa2dbbe",
         "description": "Font by Haley Halcyon ",
         "extract": False
     },
     "https://2gd4.me/tidbit/shavian-fonts/bantershaviantriline.otf": {
         "path": "./fonts/bantershaviantriline.otf",
+        "sha256": "e8aef26f4518db8b0f958ef0e4ddd9dacd058d8efa102a8572b906a211d34865",
         "description": "Font by Haley Halcyon ",
         "extract": False
     },
@@ -163,6 +166,14 @@ def extract_file(file_path, extract_to=None):
         os.makedirs(directory)
         print(f"Created directory: {directory}")
 
+def sha256_of(file_path):
+    h = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        while chunk := f.read(1 << 20):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def create_directory(file_path):
     """Create directory if it doesn't exist."""
     directory = os.path.dirname(file_path)
@@ -170,7 +181,7 @@ def create_directory(file_path):
         os.makedirs(directory)
         print(f"Created directory: {directory}")
 
-def download_file(url, file_path, description, should_extract=False, extract_to=None):
+def download_file(url, file_path, description, should_extract=False, extract_to=None, sha256=None):
     """Download a file with progress bar."""
     try:
         print(f"\n▶ {description}")
@@ -205,6 +216,13 @@ def download_file(url, file_path, description, should_extract=False, extract_to=
                     progress_bar.update(len(chunk))
 
         progress_bar.close()
+
+        if sha256 and sha256_of(file_path) != sha256:
+            os.remove(file_path)
+            print(f"✗ Checksum mismatch for {file_path}: the file changed upstream. Removed it;")
+            print("  check the new version and update its sha256 in init.py if it's fine.")
+            return False
+
         print(f"✓ Successfully downloaded: {file_path}")
 
         # Extract if requested
@@ -247,6 +265,13 @@ def main():
         description = config["description"]
         should_extract = config.get("extract", False)
         extract_to = config.get("extract_to", None)
+        sha256 = config.get("sha256")
+
+        # Already present and verified: nothing to do
+        if sha256 and os.path.exists(file_path) and sha256_of(file_path) == sha256:
+            print(f"✓ {file_path} already present (checksum OK)")
+            successful += 1
+            continue
 
         # Check if file already exists
         if os.path.exists(file_path):
@@ -259,7 +284,7 @@ def main():
                 continue
 
         # Download the file
-        if download_file(url, file_path, description, should_extract, extract_to):
+        if download_file(url, file_path, description, should_extract, extract_to, sha256):
             successful += 1
         else:
             failed += 1

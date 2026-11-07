@@ -24,9 +24,22 @@ Network Trash Folder
 Temporary Items
 .apdisk
 
-/src/models
-/src/dict/*.dict
+
+
 # Python / uv
 .venv/
 __pycache__/
 *.pyc
+
+# Downloaded by src/init.py (not redistributed here)
+/src/models/*
+!/src/models/README.md
+/src/dict/*
+!/src/dict/README.md
+/src/fonts/*
+!/src/fonts/README.md
+
+# Generated output
+/src/img/out/
+/src/img/tmp/
+/temp/
