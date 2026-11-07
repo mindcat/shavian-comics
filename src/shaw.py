@@ -10,7 +10,7 @@ a Shavian translation, and no comments. Special notations are:
 ^word 𐑢𐑻𐑛	word is a prefix
 $word 𐑢𐑻𐑛	word is a suffix
 Word 𐑢𐑻𐑛	always use a namer dot
-word_ 𐑢𐑻𐑛	never use a namer dot
+word _𐑢𐑻𐑛	never use a namer dot
 word_VB 𐑢𐑻𐑛	shave this way when tagged as a verb
 word. 𐑢𐑻𐑛	shave this way when no suffix is present
 word .𐑢𐑻𐑛	word takes no prefixes
@@ -39,13 +39,13 @@ dot_entire_name = True
 if os.path.exists('config.py'):
   from config import *
 
-script = postag = alphabet = False
+script = postag = alphabet = diacritics = tooltips = False
 dict = htags = { }
 tokens = [ "." ]
 units = { "ms":"𐑥𐑕","bc":"𐑚𐑰𐑕𐑰","psi":"𐑐𐑕𐑦","pc":"𐑐𐑕","mi":"𐑥𐑲" }
 contr = [ "'d","'ll","'m","n't","'re","'s","'ve" ]
 abbrev = [ "abbr","acad","al","alt","apr","assn","at","aug","ave","b","c","ca","cf",
-	"capt","cent","chm","chmn","co","col","comdr","corp","cpl","d","dec","dept","dist",
+	"capt","cent","chm","chmn","co","col","comdr","corp","cpl","cpt","d","dec","dept","dist",
 	"div","dr","ed","esq","est","etc","feb","fl","gen", "gov","hon","inc",
 	"inst","jan","jr","lat","lib","lt","ltd","mar","mr","mrs","ms","msgr",
 	"mt","mts","mus","nov","oct","pg","phd","pl","pop","pp","prof","pseud","pt",
@@ -53,6 +53,7 @@ abbrev = [ "abbr","acad","al","alt","apr","assn","at","aug","ave","b","c","ca","
 
 # Remove diacritics from Latin letters, break up ligatures, and do nothing else.
 def unaccent (str):
+  if diacritics: return str
   map = "AAAAAA CEEEEIIIIDNOOOOO OUUUUY  aaaaaa ceeeeiiiidnooooo ouuuuy yAaAaAaCcCcCcCcDdDdEeEeEeEeEeGgGgGgGgHhHhIiIiIiIiIi  JjKkkLlLlLlLlLlNnNnNn   OoOoOo  RrRrRrSsSsSsSsTtTtTtUuUuUuUuUuUuWwYyYZzZzZz bBBb   CcDDDdd  EFfG  IIKkl  NnOOo  Pp     tTtTUuYVYyZz    255      Ǳǲǳ      AaIiOoUuUuUuUuUu AaAaÆæGgGgKkOoOo  j   Gg  NnAaÆæOoAaAaEeEeIiIiOoOoRrRrUuUuSsTt  HhNd  ZzAaEeOoOoOoOoYylntj  ACcLTsz  BU EeJjqqRrYy"
   ext = "AaBbBbBbCcDdDdDdDdDdEeEeEeEeEeFfGgHhHhHhHhHhIiIiKkKkKkLlLlLlLlMmMmMmNnNnNnNnOoOoOoOoPpPpRrRrRrRrSsSsSsSsSsTtTtTtTtUuUuUuUuUuVvVvWwWwWwWwWwXxXxYyZzZzZzhtwyasssSSẟAaAaAaAaAaAaAaAaAaAaAaAaEeEeEeEeEeEeEeEeIiIiOoOoOoOoOoOoOoOoOoOoOoOoUuUuUuUuUuUuUuYyYyYyYyLLllVvYy"
   lig = { 'Æ':'AE','æ':'ae','Ǳ':'DZ','ǲ':'Dz','ǳ':'dz','Ĳ':'Ij','ĳ':'ij','Ǉ':'LJ','ǈ':'Lj','ǉ':'lj','Ǌ':'NJ','ǋ':'Nj','ǌ':'nj','Œ':'OE','œ':'oe','Ƣ':'OI','ƣ':'oi','ß':'ss','ﬀ':'ff','ﬁ':'fi','ﬂ':'fl','ﬃ':'ffi','ﬄ':'ffl','ﬅ':'st','ﬆ':'st' }
@@ -111,6 +112,8 @@ class MyHTMLParser(HTMLParser):
         at = ('charset', 'UTF-8')
       if at[0] == 'content':
         at = ('content', 'text/html; charset=UTF-8')
+      if at[0] == 'systemlanguage':
+        at = ('systemLanguage', at[1])
       out += ' '+at[0]
       if at[0] in ('alt','title'):
         notrans (out+'="')
@@ -135,22 +138,23 @@ class MyHTMLParser(HTMLParser):
 
 # Search all the ways a word might appear in the dictionary
 def lookup (word, pos):
-  ret = ""
   low = word.lower()
   upp = word[0].upper()+low[1:]
   pos = "_" + pos
-  if aflag & 2: list = [ low+pos, low+pos[:3], word, word+"_",low, low+"_", low+"_NN", low+"_NNS", upp ]
-  else: list = [ low+pos,low+pos[:3],word+".",upp+".",word,word+"_",low+".",low,low+"_",low+"_NN",low+"_NNS",upp ]
+  if aflag & 2: list = [ low+pos, low+pos[:3], word, low, upp ]
+  else: list = [ low+pos,low+pos[:3],word+".",word,low+".",low,upp+".",upp ]
+  if pos == "_UNK": list = list[2:]
   for look in list:
-    if look in dict:
-      ret = dict[look]
-      if aflag & 1 and ret[0] == '.' or aflag & 2 and ret[-1] == '.': ret = ""
-      ret = ret.replace(".","")
-      if not ret: continue
-      if (word[0].isupper() or look[0].isupper()) \
-	   and (look[-1] != "_" or aflag) and not re.search("[A-Z]",ret):
-        ret = "·" + ret
-      break
+    ret = dict.get(look)
+    if not ret: continue
+    if aflag & 1 and ret[0] == '.' or aflag & 2 and ret[-1] == '.':
+      ret = None; continue
+    ret = ret.replace(".","")
+    if (word[0].isupper() or look[0].isupper()) \
+	and (ret[0] != "_" or aflag) and not re.search("[A-Z]",ret):
+      ret = "·" + ret
+    ret = ret.replace("_","")
+    break
   return ret
 
 def suffix_split (inp, pos, adj):
@@ -161,38 +165,43 @@ def suffix_split (inp, pos, adj):
   low = inp.lower();
   best = (0, "")
   for split in range(2,long):
-    suff = "$"+low[split:]
-    if not suff in dict: continue
+    suff = dict.get("$"+low[split:])
+    if not suff: continue
     if low[split] == low[split-1]:
-      if long-split == 1 or low[split] in "eos": continue
+      if long-split == 1 or low[split] in "efos": continue
     if low[split-1] == low[split-2]:
       if low[split:] == "ess" and low[split-1] in "ln": continue
     else:
       if low[split:] == "ry" and low[split-1] in "aeiouf": continue
+      if low[split:] == "st" and low[split-1] in "aeiouy": continue
       if low[split:] == "ha" and low[split-1] in "cpst": continue
+      if low[split:] == "ur" and low[split-1] in "deot": continue
       if low[split:] == "th" and low[split-1] in "e": continue
-      if low[split:] == "d" and low[split-1] in "adeiou": continue
+      if low[split:] == "l" and low[split-1] in "e": continue
+      if low[split:] == "d" and low[split-1] in "adeio": continue
       if low[split:] == "w" and low[split-1] in "aeo": continue
       if low[split:] == "t" and low[split-1] in "aeioust": continue
-      if low[split:] == "k" and low[split-1] in "aceino": continue
+      if low[split:] == "k" and low[split-1] in "aeino": continue
       if low[split:] == "r" and low[split-1] in "aeiou": continue
       if low[split:] == "m" and low[split-1] in "eis": continue
       if low[split:] == "z" and low[split-1] in "i": continue
       if low[split:] == "n" and low[split-1] in "eio": continue
     if low[split:] == "es" and low[split-1] not in "hiosuxz": continue
-    suff = dict[suff]
+    if low[split:] == "le" and (low[split-1] in "aeilouy" or adj): continue
+    if low[split:] == "re" and (low[split-1] in "aeioruy" or adj): continue
     if aflag & 2 and suff[-1] == '.': continue
     for pess in range(2):
       if pess:
+        if low[split-1] == 'c' and low[split] in "eiy": continue
         word = inp[:split]
       elif low[split-1] == 'i' and low[split] not in "cfikmpsv":
         word = inp[:split-1] + 'y'
-      elif low[split] in "aeiouy'" and low[split-1] not in "aeio" \
+      elif low[split-1] not in "aeio" and (low[split] in "aeiouy'" or low[split:] == "le") \
 		and low[split:split+2] not in [ "ub","up" ]:
         if low[split-1] == low[split-2] and low[split-1] not in "hsw":
           word = inp[:split-1]
         elif ( low[split-1] in "cdghlsuvz" or low[split] == 'e' or low[split-2] in "aeiousy" ) \
-		and (low[split-1] not in "cg" or low[split] not in "aou"):
+		and (low[split-1] not in "cg" or low[split] not in "alou"):
           word = inp[:split] + "e"
         else: continue
       elif low[split-2:split] == "dg":
@@ -207,14 +216,16 @@ def suffix_split (inp, pos, adj):
       if score:
         if low[split] == "'" and pess == 0: score /= 2
         if low[split:] in [ "call" ]: score = 1
-        if low[split:] in [ "bed","can","cat","cent","dance","ine","kin","one","pal","path","ster","tie","tied","ties","tying","wing","x" ]:
+        if low[split:] in [ "bed","can","cat","cent","dance","eye","hout","hus","ine","kin","les","one","pal","path","ster","tie","tied","ties","tying","wing","x" ]:
           score = max (1, score - 9)
       if (score <= best[0]): continue
       root = root[1]
+      if root[-1] in "𐑦𐑧𐑩𐑰𐑱" and word[-1] == "e" \
+	  and (low[split-1] not in "ce" or low[split:] == "y"): continue
       if low[split-1] == 'e' and low[split-2] not in "aegiou" and low[split] in "aou" \
 	  and (split+1 == long or low[split+1] in "dlmnprstu") \
 	  and low[split:] not in [ "arm","out","und","up" ]:
-        if root[-1] in "𐑦𐑰": root = root[:-1]
+        if root[-1] in "𐑦𐑧𐑩𐑰𐑱": root = root[:-1]
         root += "𐑦"
       if root[-1] == "𐑓" and suff[0] > "𐑗" and word[-1] in "VWvw" and low[split:] != "s":
         root = root[:-1] + "𐑝"
@@ -222,18 +233,26 @@ def suffix_split (inp, pos, adj):
         root = root[:-2] + "𐑤"
       if root[-3:] in ["𐑞𐑩𐑥","𐑟𐑩𐑥"] and suff not in ["'","𐑛:","𐑟:","𐑦𐑙"]:
         root = root[:-2] + "𐑥"
-      if root[-2:] in ["𐑩𐑤","𐑭𐑤","𐑾𐑤"] and suff == "𐑦𐑑𐑦":
-        mid = "𐑦" if root[-3] in "𐑖𐑗𐑠𐑡" or root[-2] == "𐑾" else ""
-        root = root[:-2] + mid + "𐑨𐑤"
+      mid = low[split-2]
+      if mid == low[split-1]: mid = low[split-3]
+      mid = "aeioy".find(mid)
+      if mid >= 0 and len(root) > 2 and root[-2] in "𐑩𐑭𐑲𐑾" and root[-1] in "𐑑𐑤𐑯" and suff in ["𐑦𐑒","𐑦𐑑𐑦"]:
+        mid = "𐑨𐑧𐑦𐑪𐑦"[mid]
+        if mid != "𐑦" and (root[-3] in "𐑖𐑗𐑠𐑡" or root[-2] == "𐑾"): mid = "𐑦" + mid
+        root = root[:-2] + mid + root[-1]
       mid = root[-1] + suff[0]
       if merge_ia:
         if mid == "𐑦𐑩": mid = "𐑾"
         if mid == "𐑦𐑼": mid = "𐑽"
-      if mid in ["𐑤𐑤","𐑯𐑯"] and len(suff) < 3: mid = mid[0]
+      if mid in ["𐑒𐑒","𐑤𐑤","𐑯𐑯"] and len(suff) < 3: mid = mid[0]
       best = (score, root[:-1] + mid + suff[1:])
-  if long > 1 and low[-1] == low[-2] and low[-2] not in "aeiosu":
+  if     long > 1 and low[-1] == low[-2] and low[-2] not in "aeiosu" \
+      or long > 3 and low[-1] == "e"     and low[-2] not in "aceiy" and not adj:
+    sflag = aflag
     aflag |= 2
     root = suffix_split (inp[:-1], "UNK", 0)
+    aflag = sflag
+    if low[-1] == "e": root = (root[0]//2,root[1])
     if best[0] < root[0]: best = root
   if len(best[1]) > 1:
     word = best[1][:-2]
@@ -248,10 +267,10 @@ def suffix_split (inp, pos, adj):
     word += end
     if word[-4:] == "𐑒𐑩𐑤𐑦" and word[-5] in "𐑦𐑩":
       word = word[:-4] + "𐑒𐑤𐑦"
-    if word[-4:-2] == "𐑑𐑵" and word[-2] in "𐑩𐑱𐑺𐑼":
+    if len(word) > 4 and word[-4] == "𐑑" and word[-3] in "𐑫𐑵" and word[-2] in "𐑩𐑱𐑺𐑼":
       word = word[:-4] + "𐑗" + word[-3:]
     pal = word[::-1].replace("𐑩𐑦","𐑾",1)[::-1].split("𐑾")
-    if len(pal) > 1 and len(pal[-2]) > 1 and \
+    if len(pal) > 1 and len(pal[-2]) > 1 and pal[-2][-2] != ":" and \
 	pal[-2][-1] in "𐑑𐑕𐑟" and pal[-1] in ["𐑕","𐑤","𐑯",""]:
       mid = "𐑖"
       if pal[-2][-1] == "𐑑":
@@ -264,22 +283,26 @@ def suffix_split (inp, pos, adj):
 
 def prefix_split (word, pos, ms):
   global aflag
+  low = word.lower()
   best = suffix_split (word, pos, 0)
   if best[0] == len(word)**2: return best
   for split in range(len(word)-2,ms,-1):
-    pref = "^"+word[:split].lower()
-    if not pref in dict: continue
-    if word[:split+1].lower() == "un": continue
-    if pref == "^z" and word[split].lower() in "aeiouy": continue
+    pref = dict.get("^"+low[:split])
+    if not pref: continue
+    if low[:split+1] == "un": continue
+    if low[split-1:split+2] == "'ll": continue
+    if split == 1 and low[0] in "gkyz" and low[1] in "aehiloruwy": continue
+    if split == 1 and low[0] in "gk" and low[1] in "nv": continue
     aflag = word[split-1] != "'"
     root = prefix_split (word[split:], pos, 1)
     score = split**2 + root[0] if root[0] else 0
-    if pref == "^la": score -= 4;
+    if pref == "𐑤𐑩": score -= 4;
     if score > best[0]:
       dot = "·" if word[0].isupper() else ""
-      pref = dict[pref]
       init = root[1][0]
       if (init == "·"): init = root[1][1]
+      if alphabet and pref[-1] == "𐑦":
+        pref = pref[:-1] + "𐒀"
       if pref[-1] == init and pref[-1] in "𐑤𐑥𐑮𐑯" and pref[-2] in '𐑦𐑧' \
 	or pref == "𐑥𐑩𐑒" and init == "𐑒":
         pref = pref[:-1]
@@ -304,6 +327,12 @@ for fname in sys.argv[1:]:
   if fname == "-a":		# Choose output alphabet, default Shavian
     alphabet = -1
     continue
+  if fname == "-d":		# Keep diacritics e.g. for a German dictionary
+    diacritics = True
+    continue
+  if fname == "-t":		# Enable tooltips
+    tooltips = True
+    continue
   with open (fname, 'r', encoding="utf-8") as df:
     for line in df:
       word = line.split()
@@ -311,7 +340,6 @@ for fname in sys.argv[1:]:
         word[1] = word[1][:-1] + "𐑝"
       if not postag:
         word[0] = re.sub('_[A-Z]+','',word[0])
-        if word[0]+'_' in dict: word[0] += '_'
       if first and word[0] in dict:
         if word[1] not in dict[word[0]].split('@'):
           dict[word[0]] += "@"+word[1]
@@ -324,19 +352,39 @@ for fname in sys.argv[1:]:
         if low != word[0] and low in dict: del dict[low]
   first = False
 
-if alphabet: merge_ia = False
+if "ization" not in dict:
+  dict["ization"] = ".𐑲𐑟𐑱𐑖𐑩𐑯"
+if alphabet:
+  dict["yeah"] = "𐑘𐑺︀"
+  dict["oyeah"] = "𐑴𐑘𐑺︀"
+  merge_ia = False
 if merge_ia:
   for word in dict:
     dict[word] = dict[word].replace("𐑦𐑩","𐑾").replace("𐑦𐑼","𐑽")
+
+if alphabet == 3:
+  for word in dict:
+    if word[:2] == "$u" and dict[word][0] == "𐑿": dict[word] = "ᛡ𐑵" + dict[word][1:]
+    dict[word] = re.sub('([𐑐𐑑𐑒𐑓𐑔𐑕𐑖𐑗𐑚𐑛𐑜𐑝𐑞𐑟𐑠𐑡𐑣𐑤𐑥𐑮𐑯𐑫𐑵])𐑘','\\1ᛡ',dict[word].replace("𐑿","𐑘𐑵"))
+
+if alphabet == 12:
+  for word in dict:
+    if "ph" in word.lower():
+      dict[word] = dict[word].replace("𐑓","ⲫ")
+    for tup in [("𐑙𐑜","𐑙"),("𐑙𐑒","𐑜𐑒"),("𐑒𐑕","ⲝ"),("𐑐𐑕","ⲯ")]:
+      dict[word] = dict[word].replace(tup[0],tup[1])
 
 text = sys.stdin.read()
 # Any morpheme containing periods, hyphens, or slashes needs special treatment here
 for tup in [("([ʻˈ‘’ʼ´`ʿ]|&(#8217|rsquo);)","'"),("[\u00ad\u200b]",""),
 	(r'\be\.g\.','igz'),(r'\bi\.e\.','ie'),(r'\bph\.d\.','phd'),
 	(r'\[([a-z])\]',r'\1'),(r'\bde-','dee-'),(r'\bt-','tee-'),("'tee-","'t-"),
-	(r'\bw/o\b','without'),(r'\bw/','with '),('vis-[aà]-vis','vis-ah-vee'),
-	('sine qua','sinna qua')]:
-  text = re.sub(tup[0],tup[1],text,count=0,flags=re.I)
+	(r'\sw/o\b',' without'),(r'\sw/',' with '),('vis-[aà]-vis','vis-ah-vee'),
+	('sine qua','sinna qua'),(r"\bn't\b","not"),('dgab','dgeab')]:
+  text = re.sub(tup[0],tup[1],text,flags=re.I)
+  text = re.sub(r'([a-z])IQ',r'\1zxighkyu',text)
+  text = re.sub(r'([a-z])OS',r'\1zxowehce',text)
+  text = re.sub(r'([a-z])TV',r'\1zxteevee',text)
 
 toki = 1
 parser = MyHTMLParser()
@@ -380,16 +428,18 @@ out = []			# Translate to Shavian
 prev = (".",'.')
 toki = 1
 initial = maydot = True
-map = { "𐑑":"𐑑𐑩","𐑓":"𐑓𐑹","𐑝":"𐑩𐑝","𐑯":"𐑩𐑯𐑛","𐑞":"𐑞𐑩" }
+map = { "𐑑":"𐑑𐑵","𐑓":"𐑓𐑹","𐑝":"𐑪𐑝","𐑞":"𐑞𐑩","𐑯":"𐑨𐑯𐑛","𐑩𐑯":"𐑨𐑯" }
 if alphabet == 1:
-  map = { "𐑑":"𐑑𐑵","𐑓":"𐑓𐑹","𐑝":"𐑪𐑝","𐑯":"𐑨𐑯𐑛","𐑩𐑯":"𐑨𐑯","𐑩":"𐑭" }
+  map.update({"𐑞":"𐑞","𐑩":"𐑭"})
 if alphabet == 3:
   apostrophe = "ᛌ"
-  map.update({"𐑘𐑧𐑩":"𐑘𐑧"})
+  map["𐑘𐑧𐑩"] = "𐑘𐑧"
 if alphabet == 6:
-  map = { "𐑑":"𐑑𐑵","𐑓":"𐑓𐑹","𐑝":"𐑪𐑝","𐑯":"𐑨𐑯𐑛","𐑞":"𐑞𐑦","𐑩𐑯":"𐑨𐑯","𐑩":"𐑧" }
+  map.update({"𐑞":"𐑞𐑦","𐑩":"𐑧"})
 if alphabet == 7:
   map = { "𐑦𐑑":"𐑦","𐑦𐑟":"𐑟","𐑚𐑰":"𐑚" }
+if alphabet == 11:
+  apostrophe = ""
 for token in jtags[1:]:
   if toki in htags:
     out.append(htags[toki])
@@ -397,7 +447,7 @@ for token in jtags[1:]:
       initial = True
   toki += 1
 #  print (token, file=sys.stderr)
-  if token[0] in ['.','?','!',':','"','“','”']:
+  if token[0] in ['.','?','!',':']:
     initial = True
   word = token[0]
   low = word.lower()
@@ -409,18 +459,17 @@ for token in jtags[1:]:
         if out[i] == tran: break
       out[i] = tran[:-2] + befto[prev[0]]
   tran = word
-  if word.split("'")[0] == "I": word = "i" + word[1:]
-  if word[0].isalpha() and not re.fullmatch("[WMDC]*[CLX]*[XVI]*('(s|d|ll))?",word):
+  base = word.split("'")[0]
+  if word[0].isalpha() and len(base) < 46 and \
+	(len(base) == 1 or not re.fullmatch("[WMDC]*[CLX]*[XVI]*",base)):
     dot = word[0].isupper()
     if initial:
       initial = False
-      if word.split("'")[0] == "i": dot = True
       if len(word) == 1 or word[1].islower() and word not in ["God"]:
         word = word[0].lower() + word[1:]
     aflag = 0
     root = prefix_split (word, token[1], 0)
     if root[1]: tran = root[1].replace("'",apostrophe).replace(":","").replace(".","")
-    if len(tran) > 2 and tran[-2:] == "𐑥𐑚": tran = tran[:-1]
     if prev[0][0].isdigit() and low in units:
       tran = units[low]
     if alphabet in [0,7,10]: dot = maydot and "·" in tran
@@ -434,7 +483,7 @@ for token in jtags[1:]:
       for rep in ['𐒁𐑣𐑒','𐒂𐑣𐑜','𐒃𐑣𐑤','𐒄𐑣𐑢','𐒅𐑺︀','𐒆𐑻︀','𐒁𐑒︀','𐒂𐑜︀','𐒃𐑤︀','𐒄𐑢︀']: # Those without 𐑣 contain VS1
         tran = tran.replace(rep[1:],rep[0])
     if alphabet == 3:
-      for tup in [("([𐑬𐑱𐑲𐑴𐑵𐑶𐑿])𐑼","\\1𐑮"),("𐑫𐑼","𐑫\u200d𐑮"),("𐑒𐑢","ᛢ"),("𐑕𐑗","𐑕𐑑𐑘"),("𐑕𐑑","ᛥ")]:
+      for tup in [("([ᛌ𐑬𐑱𐑲𐑶𐑿])𐑼","\\1𐑮"),("𐑫𐑼","𐑫\u200d𐑮"),("𐑒𐑢","ᛢ"),("𐑕𐑗","𐑕𐑑ᛡ"),("𐑕𐑑","ᛥ")]:
         tran = re.sub(tup[0],tup[1],tran)
     if alphabet == 5:
       for tup in [("([𐑧𐑨𐑪𐑳])𐑮","\\1𐑮𐑮"),("([𐑑𐑒𐑕𐑛𐑜𐑟])𐑣","\\1‧𐑣"),("𐑯𐑜","𐑯‧𐑜"),("𐑤𐑤","𐑤‧𐑤")]:
@@ -443,6 +492,13 @@ for token in jtags[1:]:
       tran = re.sub("([𐑦𐑧𐑨𐑩𐑪𐑫𐑬𐑭𐑰𐑱𐑲𐑳𐑴𐑵𐑶𐑷])𐑼","\\1𐑮",tran)
     if alphabet == 7:
       if "x" in low: tran = tran.replace("𐑒𐑕","",1).replace("𐑜𐑟","",1)
+    if alphabet == 12:
+      for tup in [("([𐑧𐑨𐑪𐑳])𐑮","\\1𐑼"),
+		("([𐒀𐑦𐑧𐑨𐑩𐑪𐑫𐑬𐑭𐑰𐑱𐑲𐑳𐑴𐑵𐑶𐑷])([𐒀𐑦𐑧𐑨𐑩𐑪𐑫𐑬𐑭𐑰𐑱𐑲𐑳𐑴𐑵𐑶𐑷𐑸𐑹𐑺𐑻𐑽𐑾])","\\1`\\2"),
+		("𐑩(?!$)","`"),("𐑑[𐒀𐑦𐑰]`(?!𐑦)","ϯ"),("`+","\u0300"),("'","\u0305")]:
+        tran = re.sub(tup[0],tup[1],tran)
+    if alphabet == 13:
+      tran = re.sub("([𐒀𐑦𐑰])([𐑦𐑧𐑨𐑩𐑪𐑫𐑬𐑭𐑰𐑱𐑲𐑳𐑴𐑵𐑶𐑷𐑸𐑹𐑺𐑻𐑼𐑽𐑾])","\\1𐑘\\2",tran)
     if dot:
       tran = "·" + tran
       maydot = dot_entire_name
@@ -451,6 +507,8 @@ for token in jtags[1:]:
       maydot = True
 #      if token[0][0].isupper(): print ("NODOT",token[0])
   elif word != '-': maydot = True	# Names may contain hyphens
+  if tooltips:
+    tran = '<div class="shawtip">'+tran+'<span class="shawtiptext">'+token[0]+'</div>'
   out.append(tran)
   if low != " ": prev = (low,token[1])
 if toki in htags:
@@ -471,11 +529,11 @@ if alphabet:			# Translate Shavian to something else
 	"ɑːr","ɔːr","eər","ɜːr","ər","ɪər","ɪə","juː",
 	"i","x","ɣ","ɬ","hw","eə","ɜː" ],
       [ "ᛈ","ᛏ","ᛣ","ᚠ","ᚦ","ᛋ","ᛋᚳ","ᚳ","ᛄ","ᛝ",	# Runic
-	"ᛒ","ᛞ","ᚸ",runic_vee,"ᚦ","ᛉ","ᛉᚳ","ᚷ","ᚹ","ᚻ",
+	"ᛒ","ᛞ","ᚸ",runic_vee,"ᚦ","ᛉ","ᛉᚷ","ᚷ","ᚹ","ᚻ",
 	"ᛚ","ᛗ","ᛁ","ᛖ","ᚫ","ᚣ","ᚩ","ᚢ","ᚫᚢ","ᚪ",
-	"ᚱ","ᚾ","ᛇ","ᛖᛡ","ᚪᛡ","ᚣ","ᛟ","ᚢ","ᛟᛡ","ᚩ",
-	"ᚪᚱ","ᚩ\u200dᚱ","ᛖ\u200dᚱ","ᚣᚱ","ᚣᚱ","ᛠᚱ","ᛠ","ᛄᚢ",
-	"ᛇ","ᛤ","ᛤ","ᚻᛚ","ᚻᚹ","ᛖ","ᚣ" ],
+	"ᚱ","ᚾ","ᛇ","ᛠᛡ","ᚪᛡ","ᚣ","ᛟ","ᚢ","ᛟᛡ","ᚩ",
+	"ᚪᚱ","ᚩ\u200dᚱ","ᛠᚱ","ᚣᚱ","ᚣ\u200dᚱ","ᛁᚣᚱ","ᛁᚣ","ᛄᚢ",
+	"ᛇ","ᛤ","ᛤ","ᚻᛚ","ᚻᚹ","ᛠ","ᚣ" ],
       [ "p","t","k","f","t̂","s","ŝ","ĉ","y","n̂",	# Diacritic
 	"b","d","g","v","d̂","z","ẑ","j","w","h",
 	"l","m","i","e","a","ȧ","o","ů","ă","â",
@@ -518,14 +576,40 @@ if alphabet:			# Translate Shavian to something else
 	"r","n","i:","eI","aI","V","@U","u:","OI","O:",
 	"A:r","O:r","e@r","3:r","@r","i@r","i@","ju:",
 	"i","x","G","K","W","e@","3:" ],
+      [ "پ","ت","ک","ف","ث","س","ش","چ","ی","ڻ",	# Arabic
+	"ب","د","گ","ڤ","ذ","ز","ژ","ج","ۋ","ه",
+	"ل","م","ێ","ء","ۂ","ا","ۉ","ۆ","اۋ","آ",
+	"ر","ن","ئ","ؠ","اى","أ","ؤ","و","ؤى","ؤ",
+	"آر","ؤر","ؠر","ار","ر","ئر","ئا","یو",
+	"ی","خ","غ","ڵ","هۋ","ؠ","ا" ],
+      [ "ⲡ","ⲧ","ⲕ","ϥ","ⲑ","ⲥ","ϣ","ϭ","ⲓ","ⲅⲅ",	# Coptic
+	"ⲃ","ⲇ","ⲅ","ⲃ","ⲇ","ⲍ","ⲋ","ϫ","ⲟⲩ","ϩ",
+	"ⲗ","ⲙ","ⲓ","ⲉ","ⲁ","ⲉ","ⲟ","ⲟⲩ","ⲁⲩ","ⲁ",
+	"ⲣ","ⲛ","ⲏ","ⲉⲓ","ⲁⲓ","ⲩ","ⲱ","ⲟⲩ","ⲱⲓ","ⲟ",
+	"ⲁⲣ","ⲟⲣ","ⲓⲉⲣ","ⲉⲣ","ⲣ̀","ⲓⲩⲣ","ⲓⲩ","ⲓⲟⲩ",
+	"ⲏ","ϧ","ⲭ","ϩⲗ","ϩⲟⲩ","ⲓⲉ","ⲉ" ],
+      [ "פּ","תּ","כּ","פֿ","תֿ","ס","ש","תּש","י","ע",	# Hebrew
+	"בּ","דּ","גּ","בֿ","דֿ","ז","גֿ","דּגֿ","ו","ה",
+	"ל","מ","אֱ","אֶ","אַ","אְ","אָ","אֻ","אֲֹ","אָ",
+	"ר","נ","אִ","אֵי","אֲי","אְ","אֹֻ","אוּ","אֳי","אֳ",
+	"אָר","אֳר","אֵיר","אְר","אְר","אִר","אִיְ","יוּ",
+	"אִ","כ","ג","הל","הו","אֵ","אְ" ],
     ][alphabet-1]
   punct = { }
   if alphabet == 3:
-    punct = {" ":"᛫","-":"‑",",":"᛫᛫",".":"᛬","!":"᛭",
+    punct = { " ":"᛫","-":"‑",",":"᛫᛫",".":"᛬","?":"?","!":"᛭",
 	":":"᛬᛫",";":"᛫᛬","…":"᛫᛫᛫","(":"[",")":"]","[":"(","]":")",
 	"'":"",'"':"","‘":"‹","’":"›","“":"«","”":"»" }
   if alphabet == 7:
     punct = { "(":"",")":"" }
+  if alphabet in [11,13]:
+    punct = { ",":"\u060c",";":"\u061b","?":"\u061f",".":"\u06d4" }
+    for char in ":!«»":
+      punct[char] = char + "\u200f"
+  if alphabet == 12:
+    punct = { ".":"⳾","?":"⳺","!":"⳻","'":"",'"':"","‘":"⳼","’":"⳹","“":"⳼","”":"⳹","«":"⳼","»":"⳹" }
+  if alphabet == 13:
+    punct.update({".":"\u05c3",":":"⸰","-":"\u05be"})
   tran = [];
   angle = squote = dquote = eatsp = False
   for char in out:
@@ -542,12 +626,12 @@ if alphabet:			# Translate Shavian to something else
         char = "“”"[dquote]
         dquote = not dquote
       char = punct[char]
-      eatsp = True
+      eatsp = alphabet == 3
     tran.append(char)
   out = "".join(tran)
   if alphabet == 3:
     for bind in """ ᚠᚩ ᚠᚪ ᚠᚫ ᚠᚱ ᚦᚱ ᚩᚢ ᚩᛉ ᚪᚱ ᚪᛉ ᚫᚢ ᚫᛉ ᚱᚱ ᚷᚩ ᚷᚪ ᚷᚫ ᚷᛚ
-	ᚻᚢ ᚻᚣ ᚻᚩ ᚻᚪ ᚻᚫ ᚻᚱ ᚻᚹ ᚻᛖ ᚻᛚ ᚾᚾ ᚾᛏ ᛖᚠ ᛖᚦ ᛖᚻ ᛖᛈ ᛖᛒ ᛖᛗ ᛖᛚ ᛖᛞ
+	ᚻᚢ ᚻᚣ ᚻᚩ ᚻᚪ ᚻᚫ ᚻᚱ ᚻᚹ ᚻᛖ ᚻᛚ ᚾᚾ ᚾᛏ ᛖᚠ ᛖᚦ ᛖᚱ ᛖᚻ ᛖᛈ ᛖᛒ ᛖᛗ ᛖᛚ ᛖᛞ
 	ᛗᚢ ᛗᚣ ᛗᚩ ᛗᚪ ᛗᚫ ᛗᚱ ᛗᛗ ᛞᚢ ᛞᚣ ᛞᚩ ᛞᚪ ᛞᚫ ᛞᚱ ᛞᛖ ᛞᛗ ᛞᛞ """.split():
       out = out.replace(bind,bind[0]+"\u200d"+bind[1])
     for bind in "ᚩᚢ ᚩᚱ ᚪᚱ ᚫᚢ".split():
@@ -557,6 +641,16 @@ if alphabet:			# Translate Shavian to something else
   if alphabet == 8:
     for tup in [(r'\bе','э'),("йе","е"),("йа","я"),("иа","ия"),("тс","ц")]:
       out = re.sub(tup[0],tup[1],out)
+  if alphabet == 12:
+    out = re.sub("([\u0300\u0305])([ϣϥϧϩϫϭⲁⲃⲅⲇⲉⲋⲍⲏⲑⲓⲕⲗⲙⲛⲟⲡⲣⲥⲧⲩⲭⲱ])","\\2\\1",out)
+  if alphabet == 13:
+    final=0
+    out = list(re.sub("([בּגֿדהוזחטיךכלםמןנסעףפץצקרשת])א","\\1",out))
+    for i in range(len(out)):
+      if out[i] in "אבגדהוזחטיךכלםמןנסעףפץצקרשת": final=i
+      if ord(out[i]) >> 7 != 11 and out[final] in "כמנפצ":
+        out[final] = chr(ord(out[final])-1)
+    out = "".join(out)
 
 def uppercase(match):
   return match.group()[1].upper()

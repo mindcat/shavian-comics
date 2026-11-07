@@ -288,8 +288,7 @@ def transliterate_to_shavian(text):
             print(f"  Error running shaw.py (return code {process.returncode}):")
             print(f"  Stderr: {process.stderr.strip()}")
             return ""
-        # Newer dechifro dictionaries tag some words with a leading '_' that this
-        # (older) shaw.py passes through; it's never part of Shavian text
+        # Safety net: drop any stray dictionary "_" markers if shaw.py and the dict drift apart
         shavian_text = re.sub(r"(?<![^\W_])_", "", process.stdout).strip()
         print(f"  Shavian Transliteration: '{shavian_text}'")
         return shavian_text
