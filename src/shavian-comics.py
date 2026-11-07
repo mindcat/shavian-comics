@@ -1,52 +1,46 @@
 # Core libraries
 import os
+import re
+import sys
 import subprocess
-import io
+from collections import Counter
 from pathlib import Path
 import shutil # For clearing temp directory if needed
-import math
 
 # Image processing
-from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import numpy as np
+from scipy import ndimage
 
 # Object detection/segmentation
 from ultralytics import YOLO # Preferred for running .pt files
 
 # OCR
-from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch
+from transformers import AutoModelForCausalLM
+
+# All relative paths below are relative to this script's directory
+os.chdir(Path(__file__).resolve().parent)
+
+
+def pick_device():
+    """Use an NVIDIA GPU if present, then Apple Silicon, then fall back to CPU."""
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+DEVICE = os.environ.get("SHAVIAN_DEVICE") or pick_device()
+print(f"Using device: {DEVICE}")
+
 ocr_model = AutoModelForCausalLM.from_pretrained(
     "vikhyatk/moondream2",
     revision="2025-06-21",
     trust_remote_code=True,
-    device_map={"": "mps"}  # ...or 'mps', on Apple Silicon
+    device_map={"": DEVICE},
 )
-# import pytesseract # Requires tesseract executable install
-# import easyocr
-# from autocorrect import Speller
-# import nltk
-# nltk.download('words')
-# word_list = set(nltk.corpus.words.words())
-# # nltk.download('words')
-# from symspellpy import SymSpell, Verbosity
-# # Initialize SymSpell
-# sym_spell = SymSpell(max_dictionary_edit_distance=2, prefix_length=7)
-# # Define path to your downloaded dictionary
-# dictionary_path = "dict/frequency_dictionary_en_82_765.txt"
-# # Load the dictionary
-# try:
-#     if not sym_spell.load_dictionary(dictionary_path, term_index=0, count_index=1):
-#         print(f"Error: Dictionary file not found or failed to load from {dictionary_path}")
-#         # Handle error appropriately - maybe raise an exception or set sym_spell to None
-#         raise FileNotFoundError(f"SymSpell dictionary not found at {dictionary_path}")
-#     print("SymSpell dictionary loaded successfully.")
-# except Exception as e:
-#     print(f"An unexpected error occurred loading the SymSpell dictionary: {e}")
-#     raise e
-
-# Optional: Display images in notebook
-# %matplotlib inline
-# import matplotlib.pyplot as plt
 
 # --- Directories ---
 INPUT_DIR = Path("img/in")
@@ -57,12 +51,11 @@ FONT_DIR = Path("fonts") # Directory containing the .otf font file
 DICT_DIR = Path("dict") # Directory containing the dictionary for shaw.py
 
 # --- Model ---
-# Using the .pt file is generally easier with the ultralytics library
-MODEL_NAME = "model.pt" # Or .onnx if using ONNX runtime
-MODEL_PATH = MODEL_DIR / MODEL_NAME # Adjust subdirs as needed
+MODEL_NAME = "model.pt"
+MODEL_PATH = MODEL_DIR / MODEL_NAME
 
 # --- Transliteration Script ---
-SHAW_SCRIPT_PATH = "shaw.py" # Assuming it's in the same dir as the notebook or PATH
+SHAW_SCRIPT_PATH = "shaw.py"
 SHAW_DICT_PATH = DICT_DIR / "amer.dict"
 
 # --- Font ---
@@ -70,359 +63,387 @@ SHAVIAN_FONT_NAME = "backlogshavian.otf"
 # SHAVIAN_FONT_NAME = "stampatello-faceto.otf"
 # SHAVIAN_FONT_NAME = "bantershaviantriline.otf"
 SHAVIAN_FONT_PATH = FONT_DIR / SHAVIAN_FONT_NAME
-DEFAULT_FONT_SIZE = 10 # Starting font size (might need adjustment)
+MIN_FONT_SIZE = 8 # Smallest font size the fitter will try
 
-# --- Other Settings ---
-# Confidence threshold for bubble detection (adjust as needed)
-CONFIDENCE_THRESHOLD = 0.5
-IOU_THRESH = 0.8
-# Padding around detected bounding boxes when extracting/drawing
-PADDING = 5
-# Background color to fill bubbles before drawing Shavian text (RGBA)
-# Use white (255, 255, 255) with full opacity (255)
-FILL_COLOR = (255, 255, 255, 255)
+# --- Detection settings ---
+# YOLO runs once at a low confidence; candidates are then filtered by the rules below.
+YOLO_MIN_CONFIDENCE = 0.05
+IOU_THRESH = 0.5 # YOLO's own NMS threshold
+# A YOLO mask and a moondream box are "the same bubble" if their boxes overlap at least this much (IoU)
+MATCH_IOU = 0.3
+# A YOLO mask that moondream didn't see is still kept if YOLO is at least this confident
+YOLO_ONLY_CONFIDENCE = 0.6
+# Two YOLO masks overlapping more than this (as a fraction of the smaller one) are duplicates
+DUPLICATE_OVERLAP = 0.5
+
+# --- Fill / layout settings ---
+TEXT_PADDING = 4 # Minimum gap (px) between drawn text and the bubble edge
+TEXT_COLOR = (0, 0, 0, 255)
 # Set to True to clear the temp directory each run
 CLEAR_TEMP_DIR = False
 
-def count_speech_bubbles(image):
-    result = ocr_model.detect(image, "enclosed speech bubbles")["objects"]
-    return len(result)
 
-def segment_speech_bubbles(image_path, model, expected_count):
-    """
-    Detects speech bubbles in an image using the loaded YOLO model.
+# ---------------------------------------------------------------------------
+# Detection
+# ---------------------------------------------------------------------------
 
-    Args:
-        image_path (Path or str): Path to the input image.
+def box_iou(a, b):
+    """IoU of two (x1, y1, x2, y2) boxes."""
+    ix1, iy1 = max(a[0], b[0]), max(a[1], b[1])
+    ix2, iy2 = min(a[2], b[2]), min(a[3], b[3])
+    inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+    area_a = (a[2] - a[0]) * (a[3] - a[1])
+    area_b = (b[2] - b[0]) * (b[3] - b[1])
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
 
-    Returns:
-        List[Dict]: A list of dictionaries, where each dict contains:
-                    'mask': A PIL Image (mode 'L') representing the bubble mask.
-                    'bbox': A tuple (x1, y1, x2, y2) for the bounding box.
-                    'confidence': Detection confidence score.
-    """
-    confidence = 0.9
-    low, high = 0.01, 0.99
-    results = None
 
-    # Binary search loop
-    for i in range(10):  # Usually converges quickly
-        results = model(str(image_path), conf=confidence, iou=IOU_THRESH)
-        print(results[0].boxes.conf)
-        actual_count = len(results[0].boxes.conf)
-        print(f"\nactual count ?= estimated count <- confidence\n{actual_count} ?= {expected_count} <- {confidence}")
+def moondream_bubble_boxes(image):
+    """Ask moondream for speech-bubble boxes, returned in pixel (x1, y1, x2, y2)."""
+    w, h = image.size
+    objects = ocr_model.detect(image.convert("RGB"), "speech bubble")["objects"]
+    return [
+        (o["x_min"] * w, o["y_min"] * h, o["x_max"] * w, o["y_max"] * h)
+        for o in objects
+    ]
 
-        if actual_count == expected_count:
-            print(f"Found {actual_count} speech bubbles...")
-            break
 
-        if actual_count < expected_count:
-            high = confidence
-        else:
-            low = confidence
-        confidence = (low + high) / 2
-
-    detected_bubbles = []
-
-    # Results is a list (usually length 1 for single image)
-    if not results or not results[0].masks:
-        print(f"No masks found in results for {image_path.name}")
+def yolo_candidates(image_path, model, img_shape):
+    """Run YOLO once at a low confidence and return de-duplicated mask candidates."""
+    results = model(str(image_path), conf=YOLO_MIN_CONFIDENCE, iou=IOU_THRESH, device=DEVICE, verbose=False)
+    res = results[0]
+    if res.masks is None:
         return []
 
-    # Process masks from the first result object
-    res = results[0]
-    img_shape = res.orig_shape # (height, width)
-    print(f"Processing masks for {image_path.name}. Original shape: {img_shape}")
+    h, w = img_shape
+    candidates = []
+    for mask_np, conf in zip(res.masks.data.cpu().numpy(), res.boxes.conf.cpu().numpy()):
+        mask_pil = Image.fromarray((mask_np > 0.5).astype(np.uint8) * 255, mode="L")
+        if mask_pil.size != (w, h):
+            mask_pil = mask_pil.resize((w, h), Image.NEAREST)
+        mask = np.array(mask_pil) > 0
+        bbox = mask_pil.getbbox()
+        if bbox:
+            candidates.append({"mask": mask, "bbox": bbox, "confidence": float(conf)})
 
-    if res.masks:
-        masks_data = res.masks.data.cpu().numpy() # Get masks as numpy arrays on CPU
-        bboxes_data = res.boxes.xyxy.cpu().numpy() # Get bounding boxes
-        confs_data = res.boxes.conf.cpu().numpy() # Get confidences
-
-        print(f"Found {len(masks_data)} potential masks.")
-
-        for i, mask_np in enumerate(masks_data):
-            # if confs_data[i] < CONFIDENCE_THRESHOLD:
-            #     continue # Skip low confidence detections
-
-            # Ensure mask is binary (0 or 255) and correct size
-            # Ultralytics masks are often normalized or directly binary
-            # Ensure it's uint8
-            mask_np = (mask_np > 0.5).astype(np.uint8) * 255 # Binarize
-
-            # Convert numpy mask to PIL Image (mode 'L' for grayscale mask)
-            mask_pil = Image.fromarray(mask_np, mode='L')
-
-            # Resize mask to original image size if necessary (ultralytics usually returns full-size masks)
-            if mask_pil.size != (img_shape[1], img_shape[0]): # size is (width, height)
-                 print(f"Resizing mask from {mask_pil.size} to {(img_shape[1], img_shape[0])}")
-                 mask_pil = mask_pil.resize((img_shape[1], img_shape[0]), Image.NEAREST)
+    # Drop masks that mostly sit inside a more confident mask
+    candidates.sort(key=lambda c: c["confidence"], reverse=True)
+    kept = []
+    for c in candidates:
+        area = c["mask"].sum()
+        duplicate = any(
+            (c["mask"] & k["mask"]).sum() / min(area, k["mask"].sum()) > DUPLICATE_OVERLAP
+            for k in kept
+        )
+        if not duplicate:
+            kept.append(c)
+    return kept
 
 
-            # Get bounding box directly from PIL mask for consistency
-            bbox = mask_pil.getbbox()
-            if not bbox: # Handle empty masks if they occur
-                print(f"Warning: Empty mask found for detection {i}.")
-                continue
-
-            # Use the bounding box from the model if preferred, but ensure it's int
-            # bbox_model = tuple(map(int, bboxes_data[i]))
-
-            detected_bubbles.append({
-                'mask': mask_pil,
-                'bbox': bbox, # (x1, y1, x2, y2)
-                'confidence': confs_data[i]
-            })
-            print(f"  Added bubble {i+1}: bbox={bbox}, conf={confs_data[i]:.2f}")
-
-    else:
-        print(f"No masks attribute found in results for {image_path.name}")
-
-
-    return detected_bubbles
-
-def extract_bubble_region(original_image, bubble_info):
+def detect_speech_bubbles(image_path, image, model):
     """
-    Extracts the content of a speech bubble using its mask.
-    Creates a white background image cropped to the bubble's bbox,
-    and pastes the original content onto it using the mask.
+    Finds speech bubbles by combining YOLO (good masks) with moondream (good at
+    knowing which things really are speech bubbles).
 
-    Args:
-        original_image (PIL.Image): The full original comic image.
-        bubble_info (dict): Dictionary containing 'mask' and 'bbox'.
+    Rules:
+      * each moondream box is matched to the YOLO mask it overlaps most (IoU >= MATCH_IOU)
+      * YOLO masks moondream didn't see are kept only if YOLO is confident (>= YOLO_ONLY_CONFIDENCE)
+      * moondream boxes with no matching YOLO mask are reported and skipped
 
-    Returns:
-        PIL.Image: An image containing only the speech bubble content
-                   on a white background, cropped to the bbox.
-                   Returns None if bbox is invalid.
+    Returns a list of dicts with 'mask' (bool ndarray), 'bbox' and 'confidence'.
     """
-    mask = bubble_info['mask']
-    bbox = bubble_info['bbox'] # (x1, y1, x2, y2)
+    md_boxes = moondream_bubble_boxes(image)
+    candidates = yolo_candidates(image_path, model, (image.height, image.width))
+    print(f"  moondream boxes: {len(md_boxes)}, YOLO candidates: {len(candidates)}")
 
-    if not bbox or bbox[0] >= bbox[2] or bbox[1] >= bbox[3]:
-        print(f"Warning: Invalid bounding box {bbox}. Skipping extraction.")
+    # Greedy one-to-one matching, best IoU first
+    pairs = sorted(
+        ((box_iou(md, c["bbox"]), mi, ci) for mi, md in enumerate(md_boxes) for ci, c in enumerate(candidates)),
+        reverse=True,
+    )
+    matched_md, matched_yolo = set(), set()
+    for iou, mi, ci in pairs:
+        if iou < MATCH_IOU:
+            break
+        if mi in matched_md or ci in matched_yolo:
+            continue
+        matched_md.add(mi)
+        matched_yolo.add(ci)
+
+    bubbles = []
+    for ci, c in enumerate(candidates):
+        if ci in matched_yolo:
+            reason = "matched"
+        elif c["confidence"] >= YOLO_ONLY_CONFIDENCE:
+            reason = "YOLO-only, confident"
+        else:
+            continue
+        print(f"  keep bubble bbox={c['bbox']} conf={c['confidence']:.2f} ({reason})")
+        bubbles.append(c)
+
+    for mi, md in enumerate(md_boxes):
+        if mi not in matched_md:
+            print(f"  moondream box {tuple(round(v) for v in md)} has no YOLO mask; skipped")
+
+    # Top-to-bottom, left-to-right
+    bubbles.sort(key=lambda b: (b["bbox"][1], b["bbox"][0]))
+    return bubbles
+
+
+# ---------------------------------------------------------------------------
+# Bubble interior: the region to erase and draw into
+# ---------------------------------------------------------------------------
+
+def bubble_interior(image_rgb, yolo_mask):
+    """
+    Works out the bubble's real interior from the image itself, so the erase
+    covers all of the old text even where YOLO's mask is a little off.
+
+    Bubble background pixels are found by colour (close to the most common
+    colour under the mask); the connected region overlapping YOLO's mask most
+    is taken, and its holes (the letters) are filled in.
+
+    Returns (interior mask as bool ndarray, background colour as RGB tuple).
+    """
+    pixels = image_rgb[yolo_mask]
+    # Quantise a little so JPEG/WebP noise doesn't split the mode
+    bg = Counter(map(tuple, (pixels // 8) * 8 + 4)).most_common(1)[0][0]
+    bg = np.array(bg, dtype=np.int16)
+
+    # Work inside YOLO's box plus a margin
+    ys, xs = np.nonzero(yolo_mask)
+    pad = max(10, int(0.1 * max(np.ptp(ys), np.ptp(xs))))
+    y1, y2 = max(0, ys.min() - pad), min(yolo_mask.shape[0], ys.max() + pad + 1)
+    x1, x2 = max(0, xs.min() - pad), min(yolo_mask.shape[1], xs.max() + pad + 1)
+    crop = image_rgb[y1:y2, x1:x2].astype(np.int16)
+    crop_mask = yolo_mask[y1:y2, x1:x2]
+
+    is_bg = np.abs(crop - bg).max(axis=2) <= 40
+    labels, n = ndimage.label(is_bg)
+    yolo_area = crop_mask.sum()
+    interior = None
+    if n:
+        overlap = ndimage.sum(crop_mask, labels, index=range(1, n + 1))
+        best = int(np.argmax(overlap)) + 1
+        region = ndimage.binary_fill_holes(labels == best)
+        # Bubbles whose outline has a gap can leak into the background; reject those
+        if 0.6 * yolo_area <= region.sum() <= 1.4 * yolo_area and (region & crop_mask).sum() >= 0.7 * yolo_area:
+            interior = region
+
+    if interior is None:
+        print("  Colour-based bubble region didn't look right; using YOLO's mask")
+        interior = ndimage.binary_fill_holes(crop_mask)
+
+    full = np.zeros_like(yolo_mask)
+    full[y1:y2, x1:x2] = interior
+    return full, tuple(int(v) for v in bg)
+
+
+def extract_bubble_region(original_image, interior):
+    """
+    Crops the bubble (using its interior mask) onto a white background and
+    upscales it 2x, which helps moondream read small lettering.
+    """
+    mask_pil = Image.fromarray(ndimage.binary_dilation(interior, iterations=2).astype(np.uint8) * 255, mode="L")
+    bbox = mask_pil.getbbox()
+    if not bbox:
         return None
-
-    # Crop the mask and the original image to the bounding box
-    cropped_mask = mask.crop(bbox)
-    cropped_original = original_image.crop(bbox).convert('RGBA')
-
-    # Create a white background matching the cropped size
-    bg_color = (255, 255, 255, 0) # RGB white
-    # If original has alpha, use RGBA white
-    # if original_image.mode == 'RGBA':
-    #      bg_color = (255, 255, 255, 0)
-    clear_bg = Image.new(original_image.mode.replace('P', 'RGB'), cropped_mask.size, bg_color)
+    crop = original_image.crop(bbox).convert("RGB")
+    canvas = Image.new("RGB", crop.size, (255, 255, 255))
+    canvas.paste(crop, (0, 0), mask_pil.crop(bbox))
+    upscaled = canvas.resize((canvas.width * 2, canvas.height * 2), Image.Resampling.LANCZOS)
+    return upscaled.filter(ImageFilter.SHARPEN)
 
 
-    # Paste the original content onto the white background using the cropped mask
-    # Ensure mask is mode 'L' for pasting
-    if cropped_mask.mode != 'L':
-        cropped_mask = cropped_mask.convert('L')
-
-    clear_bg.paste(cropped_original, (0, 0), cropped_mask)
-
-    upscaled = clear_bg.resize((clear_bg.width * 2, clear_bg.height * 2), Image.Resampling.LANCZOS)
-    final = upscaled.filter(ImageFilter.SHARPEN)
-
-    return final
+# ---------------------------------------------------------------------------
+# OCR + transliteration
+# ---------------------------------------------------------------------------
 
 def perform_ocr(bubble_image):
-    """
-    Performs OCR on an image, likely containing speech bubble text.
-
-    Args:
-        bubble_image (PIL.Image): Image of the isolated speech bubble.
-
-    Returns:
-        str: The extracted text, with leading/trailing whitespace stripped.
-             Returns an empty string if OCR fails or finds no text.
-    """
+    """Reads the bubble's text with moondream. Returns '' if there's no real text."""
     if bubble_image is None:
         return ""
     try:
-        # let's try ALL machine vision OCR, because getting tesseract working sucked for edge cases
-        result = ocr_model.query(bubble_image, "Transcribe the text, all lowercase unless it is a proper name or place. If it isn't actual text, return an empty string.")["answer"]
+        result = ocr_model.query(
+            bubble_image,
+            "Transcribe the text, all lowercase unless it is a proper name or place. "
+            "If it isn't actual text, return an empty string.",
+        )["answer"].strip()
         print(f"  Moondream OCR Result: '{result}'")
-        return result
+        # Treat answers with no letters (e.g. '""' or '...') as no text
+        return result if any(ch.isalpha() for ch in result) else ""
     except Exception as e:
         print(f"  Error during OCR: {e}")
         return ""
 
+
 def transliterate_to_shavian(text):
-    """
-    Transliterates English text to Shavian using the external shaw.py script.
-
-    Args:
-        text (str): English text to transliterate.
-
-    Returns:
-        str: Transliterated Shavian text, or empty string on error/no input.
-    """
+    """Transliterates English text to Shavian using shaw.py."""
     if not text:
         return ""
-
-    command = [
-        "python3", # Or just "python" depending on your environment
-        SHAW_SCRIPT_PATH,
-        str(SHAW_DICT_PATH)
-    ]
-
+    command = [sys.executable, SHAW_SCRIPT_PATH, str(SHAW_DICT_PATH)]
     try:
-        # Use subprocess.run to send text via stdin and capture stdout
-        process = subprocess.run(
-            command,
-            input=text, # Encode input text
-            capture_output=True,
-            text=True, # Decodes stdout/stderr automatically using default encoding
-            check=False # Don't raise exception on non-zero exit code, check manually
-        )
-
+        process = subprocess.run(command, input=text, capture_output=True, text=True, check=False)
         if process.returncode != 0:
             print(f"  Error running shaw.py (return code {process.returncode}):")
             print(f"  Stderr: {process.stderr.strip()}")
-            return "" # Indicate failure
-
-        shavian_text = process.stdout.strip()
+            return ""
+        # Newer dechifro dictionaries tag some words with a leading '_' that this
+        # (older) shaw.py passes through; it's never part of Shavian text
+        shavian_text = re.sub(r"(?<![^\W_])_", "", process.stdout).strip()
         print(f"  Shavian Transliteration: '{shavian_text}'")
         return shavian_text
-
-    except FileNotFoundError:
-        print(f"Error: The script '{SHAW_SCRIPT_PATH}' or python interpreter was not found.")
-        return ""
     except Exception as e:
         print(f"  Error during transliteration: {e}")
         return ""
 
-def draw_shavian_text_in_bubble(draw, bubble_info, shavian_text, font):
-    """
-    Draws the Shavian text onto the image, wrapped to fit and centered
-    within the bubble's bbox, after filling the bubble area.
 
-    Args:
-        draw (ImageDraw.Draw): The drawing context for the image.
-        bubble_info (dict): Dictionary containing 'mask' and 'bbox'.
-        shavian_text (str): The text to draw (already transliterated).
-        font (ImageFont.FreeTypeFont): The Shavian font object.
-    """
-    bbox = bubble_info['bbox'] # (x1, y1, x2, y2)
+# ---------------------------------------------------------------------------
+# Text layout
+# ---------------------------------------------------------------------------
 
-    if not shavian_text or not bbox:
-        print("  Skipping text drawing: No text or bounding box.")
-        return
-
-    # Define some padding inside the bounding box
-    text_padding = 5 # Pixels from the bbox edge on each side
-    bubble_width = bbox[2] - bbox[0]
-    bubble_height = bbox[3] - bbox[1]
-    max_line_width = bubble_width - 2 * text_padding
-
-    # Check if the bubble is wide enough for text with padding
-    if max_line_width <= 0:
-        print("  Skipping text drawing: Bubble too narrow for padding.")
-        return
-
-    # --- Word Wrapping Logic ---
-    words = shavian_text.split()
-    if not words:
-        print("  Skipping text drawing: Text contains no words.")
-        return
-
-    C = 0.4
-
-    smart_font_size = C * math.sqrt((bubble_width * bubble_height) / len(words))
-    smart_font_size = max(DEFAULT_FONT_SIZE, smart_font_size)
-
-    font = ImageFont.truetype(font, smart_font_size)
-
-    lines = []
-    current_line = ""
-
+def wrap_words(words, font, max_width, draw):
+    """Greedy word wrap. Returns lines, or None if a single word is wider than max_width."""
+    lines, current = [], ""
     for word in words:
-        # Measure the width of the potential line with the new word added
-        test_line_with_space = (current_line + " " + word).strip()
-        test_line_no_space = (current_line + word).strip() # For first word on line
-
-        # Use the line with space unless current_line is empty
-        test_line = test_line_with_space if current_line else test_line_no_space
-
-        line_width = draw.textlength(test_line, font=font)
-
-        if line_width <= max_line_width:
-            # Word fits, add it to the current line (use the correctly spaced version)
-            current_line = test_line
+        test = f"{current} {word}" if current else word
+        if draw.textlength(test, font=font) <= max_width:
+            current = test
+        elif not current or draw.textlength(word, font=font) > max_width:
+            return None
         else:
-            # Word doesn't fit the current line.
-            if current_line:
-                # Finalize the previous line if it wasn't empty
-                lines.append(current_line)
-                current_line = "" # Reset for the new line
+            lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    return lines
 
-            # Now, start the new line with the current word.
-            # Check if the single word itself is too long for a line.
-            word_width = draw.textlength(word, font=font)
-            if word_width > max_line_width:
-                 print(f"  Warning: Word '{word}' is wider ({word_width:.0f}px) than the available space ({max_line_width:.0f}px). Placing it on its own line.")
-                 # Add the oversized word as its own line. It will likely overflow visually.
-                 lines.append(word)
-                 current_line = "" # Ensure the next word starts a new line
-            else:
-                 # The word fits on a new line by itself. Start the new line.
-                 current_line = word
 
-    # Add the last remaining line after the loop finishes
-    if current_line:
-        lines.append(current_line)
+def layout_fits(draw, font, lines, center, fit_mask):
+    """True if every line's box, centred on `center`, lies inside fit_mask."""
+    text = "\n".join(lines)
+    box = draw.multiline_textbbox(center, text, font=font, anchor="mm", align="center")
+    x1, y1, x2, y2 = (int(round(v)) for v in box)
+    h, w = fit_mask.shape
+    if x1 < 0 or y1 < 0 or x2 > w or y2 > h:
+        return False
+    # Check each line separately: bubbles are round, so short top/bottom lines can sit nearer the edge
+    line_h = (y2 - y1) / len(lines)
+    for i, line in enumerate(lines):
+        lw = draw.textlength(line, font=font)
+        lx1 = int(center[0] - lw / 2)
+        lx2 = int(np.ceil(center[0] + lw / 2))
+        ly1 = int(y1 + i * line_h)
+        ly2 = int(np.ceil(y1 + (i + 1) * line_h))
+        if not fit_mask[ly1:ly2, max(lx1, 0):lx2].all():
+            return False
+    return True
 
-    # Check if any lines were actually formed
-    if not lines:
-        print("  Skipping text drawing: No lines could be formed after wrapping.")
+
+def fit_text(draw, text, font_path, interior):
+    """
+    Finds the largest font size (and line wrapping) whose text fits inside the
+    bubble's actual shape, centred on the point deepest inside the bubble.
+
+    Returns (font, lines, center) or None if nothing fits even at MIN_FONT_SIZE.
+    """
+    words = text.split()
+    if not words:
+        return None
+
+    fit_mask = ndimage.binary_erosion(interior, iterations=TEXT_PADDING)
+    if not fit_mask.any():
+        return None
+
+    # Candidate centres: deepest point inside the bubble, and the bubble's centroid
+    dist = ndimage.distance_transform_edt(fit_mask)
+    deep_y, deep_x = np.unravel_index(np.argmax(dist), dist.shape)
+    cy, cx = ndimage.center_of_mass(fit_mask)
+    centers = [(float(deep_x), float(deep_y))]
+    if fit_mask[int(cy), int(cx)]:
+        centers.insert(0, (float(cx), float(cy)))
+
+    ys, xs = np.nonzero(fit_mask)
+    max_width = np.ptp(xs)
+    max_size = max(MIN_FONT_SIZE, int(np.ptp(ys) * 0.5))
+
+    def try_size(size):
+        font = ImageFont.truetype(font_path, size)
+        # Try narrow to wide wrapping; narrower blocks suit round bubbles
+        for frac in np.linspace(0.35, 1.0, 14):
+            lines = wrap_words(words, font, max_width * frac, draw)
+            if not lines:
+                continue
+            for center in centers:
+                if layout_fits(draw, font, lines, center, fit_mask):
+                    return font, lines, center
+        return None
+
+    best = None
+    lo, hi = MIN_FONT_SIZE, max_size
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        found = try_size(mid)
+        if found:
+            best, lo = found, mid + 1
+        else:
+            hi = mid - 1
+    return best
+
+
+def draw_shavian_text_in_bubble(draw, interior, shavian_text, font_path):
+    """Draws the Shavian text at the largest size that fits inside the bubble."""
+    fitted = fit_text(draw, shavian_text, font_path, interior)
+    if fitted is None:
+        # Fall back to the smallest size centred in the bubble, and say so
+        print(f"  Warning: text doesn't fit at {MIN_FONT_SIZE}px; drawing it anyway")
+        font = ImageFont.truetype(font_path, MIN_FONT_SIZE)
+        cy, cx = ndimage.center_of_mass(interior)
+        lines, center = [shavian_text], (cx, cy)
+    else:
+        font, lines, center = fitted
+    print(f"  Drawing at {font.size}px, {len(lines)} line(s):\n------\n" + "\n".join(lines) + "\n------")
+    draw.multiline_text(center, "\n".join(lines), font=font, fill=TEXT_COLOR, anchor="mm", align="center")
+
+
+# ---------------------------------------------------------------------------
+# Per-bubble processing
+# ---------------------------------------------------------------------------
+
+def process_bubble(original_image, image_rgb, output_image, bubble, temp_stem):
+    """Erases one bubble's text and draws the Shavian version. Raises on failure."""
+    interior, bg = bubble_interior(image_rgb, bubble["mask"])
+
+    bubble_image = extract_bubble_region(original_image, interior)
+    if bubble_image is None:
+        print("  Skipping bubble: empty interior")
+        return
+    bubble_image.save(TEMP_DIR / f"{temp_stem}.png")
+
+    original_text = perform_ocr(bubble_image)
+    if not original_text:
+        print("  No text found by OCR; leaving this bubble untouched.")
         return
 
-    # Join the lines with newline characters for drawing
-    wrapped_text = '\n'.join(lines)
+    shavian_text = transliterate_to_shavian(original_text)
+    if not shavian_text:
+        print("  Transliteration failed or returned empty; leaving this bubble untouched.")
+        return
 
-    # --- Calculate Position and Draw ---
-    try:
-        # Calculate the center coordinates of the original bounding box
-        center_x = bbox[0] + bubble_width / 2
-        center_y = bbox[1] + bubble_height / 2
+    # Erase: fill the interior (shrunk by 1px so the outline's anti-aliasing survives)
+    erase = ndimage.binary_erosion(interior, iterations=1)
+    erase_mask = Image.fromarray(erase.astype(np.uint8) * 255, mode="L")
+    erase_mask = erase_mask.filter(ImageFilter.GaussianBlur(radius=0.7))
+    fill_img = Image.new("RGBA", output_image.size, (*bg, 255))
+    output_image.paste(fill_img, (0, 0), erase_mask)
 
-        # Draw the entire wrapped text block.
-        # Use anchor="mm" to center the text block's midpoint at (center_x, center_y).
-        # Use align="center" to center each line relative to the others within the block.
-        print(f"  Drawing wrapped text (centered):\n------\n{wrapped_text}\n------")
-        draw.text(
-            (center_x, center_y), # Anchor point is the center of the bbox
-            wrapped_text,
-            font=font,
-            fill=(0, 0, 0, 255),  # Black text, full opacity
-            anchor="mm",          # Anchor the text block's middle point
-            align="center"        # Center-align multiple lines within the block
-        )
-
-        # --- Optional: Add a check/warning if text block height exceeds bubble height ---
-        # This provides feedback if the wrapped text is too tall, even if centered.
-        block_bbox = draw.textbbox((center_x, center_y), wrapped_text, font=font, anchor='mm', align='center')
-        block_height = block_bbox[3] - block_bbox[1]
-        available_height = bubble_height - 2 * text_padding # Consider padding for height too
-        if block_height > available_height:
-             print(f"  Warning: Wrapped text block height ({block_height:.0f}px) may exceed available bubble height ({available_height:.0f}px).")
-
-    except Exception as e:
-        print(f"  Error calculating text size or drawing wrapped text: {e}")
+    draw_shavian_text_in_bubble(ImageDraw.Draw(output_image), interior, shavian_text, str(SHAVIAN_FONT_PATH))
 
 
 def main():
-    # Create output and temp directories if they don't exist
-    INPUT_DIR.mkdir(parents=True, exist_ok=True)
-    TEMP_DIR.mkdir(parents=True, exist_ok=True)
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    FONT_DIR.mkdir(parents=True, exist_ok=True) # Ensure font dir exists
-    DICT_DIR.mkdir(parents=True, exist_ok=True) # Ensure dict dir exists
-    MODEL_DIR.mkdir(parents=True, exist_ok=True) # Ensure model dir exists
+    for d in (INPUT_DIR, TEMP_DIR, OUTPUT_DIR, FONT_DIR, DICT_DIR, MODEL_DIR):
+        d.mkdir(parents=True, exist_ok=True)
 
-    # Clear temp directory if requested
     if CLEAR_TEMP_DIR and TEMP_DIR.exists():
         print(f"Clearing temporary directory: {TEMP_DIR}")
         for item in TEMP_DIR.iterdir():
@@ -431,173 +452,45 @@ def main():
             elif item.is_dir():
                 shutil.rmtree(item)
 
-    # Check if required files exist
-    if not MODEL_PATH.exists():
-        raise FileNotFoundError(f"Model file not found at {MODEL_PATH}")
-    if not SHAW_SCRIPT_PATH: # Basic check, assumes it's runnable
-        print(f"Warning: Ensure '{SHAW_SCRIPT_PATH}' is accessible.")
-    if not SHAW_DICT_PATH.exists():
-        raise FileNotFoundError(f"Shavian dictionary not found at {SHAW_DICT_PATH}")
-    if not SHAVIAN_FONT_PATH.exists():
-        raise FileNotFoundError(f"Shavian font not found at {SHAVIAN_FONT_PATH}")
+    for path, what in ((MODEL_PATH, "Model file"), (SHAW_DICT_PATH, "Shavian dictionary"), (SHAVIAN_FONT_PATH, "Shavian font")):
+        if not path.exists():
+            raise FileNotFoundError(f"{what} not found at {path} (run init.py)")
 
-    print("Directories checked/created.")
+    model = YOLO(MODEL_PATH)
+    print(f"Loaded YOLO model from {MODEL_PATH}")
 
-    try:
-        print(f"Loading model from: {MODEL_PATH}")
-        model = YOLO(MODEL_PATH)
-        print("Model loaded successfully.")
-        # Example: Check model info (optional)
-        # model.info()
-    except Exception as e:
-        print(f"Error loading model: {e}")
-        # You might want to stop execution here if the model fails to load
-        raise e
-
-    try:
-        shavian_font = str(SHAVIAN_FONT_PATH)
-        print(f"Loaded font: {SHAVIAN_FONT_PATH} with size {DEFAULT_FONT_SIZE}")
-    except IOError:
-        print(f"Error: Could not load font at {SHAVIAN_FONT_PATH}. Please check the path and file.")
-        raise
-
-    # Find image files (png, jpg, jpeg, webp)
-    image_files = list(INPUT_DIR.glob('*.png')) + \
-                list(INPUT_DIR.glob('*.jpg')) + \
-                list(INPUT_DIR.glob('*.jpeg')) + \
-                list(INPUT_DIR.glob('*.webp'))
-
+    image_files = sorted(p for ext in ("png", "jpg", "jpeg", "webp") for p in INPUT_DIR.glob(f"*.{ext}"))
     print(f"Found {len(image_files)} images in {INPUT_DIR}")
 
-    # Process each image
     for image_path in image_files:
         print(f"\n--- Processing: {image_path.name} ---")
-
         try:
-            # Load the original image
-            original_image = Image.open(image_path).convert("RGBA") # Convert to RGBA for alpha compositing
+            original_image = Image.open(image_path).convert("RGBA")
+            image_rgb = np.array(original_image.convert("RGB"))
 
-            # use moondream to make this automatic
-            estimated_speech_bubbles = count_speech_bubbles(original_image)
-
-            print(f"Moondream found {estimated_speech_bubbles} speech bubbles.")
-
-            # --- Step 1: Detect Speech Bubbles ---
-            detected_bubbles = segment_speech_bubbles(image_path, model, estimated_speech_bubbles)
-
-            if not detected_bubbles:
+            bubbles = detect_speech_bubbles(image_path, original_image, model)
+            if not bubbles:
                 print("  No speech bubbles detected. Skipping.")
-                # Optionally copy the original image to output
-                # shutil.copy(image_path, OUTPUT_DIR / image_path.name)
                 continue
 
-            # Create a copy for drawing (output image)
             output_image = original_image.copy()
-            draw = ImageDraw.Draw(output_image) # Create drawing context ONCE for the output image
-
-            # --- Process Each Bubble ---
-            for i, bubble_info in enumerate(detected_bubbles):
-                print(f"\nProcessing Bubble {i+1} (bbox: {bubble_info['bbox']})")
-
-                # --- Step 2: Extract Bubble Region (Optional - primarily for OCR) ---
-                # You could OCR directly on a masked version of the original,
-                # but extracting first might improve OCR accuracy by isolating content.
-                bubble_image_for_ocr = extract_bubble_region(original_image, bubble_info)
-                if bubble_image_for_ocr:
-                    # Optional: Save intermediate bubble image to temp dir
-                    temp_filename = TEMP_DIR / f"{image_path.stem}_bubble_{i+1}.png"
-                    bubble_image_for_ocr.save(temp_filename)
-                    pass # Keep it in memory
-                else:
-                    print("  Skipping bubble due to extraction error.")
-                    continue
-
-                # --- Step 3: Perform OCR ---
-                original_text = perform_ocr(bubble_image_for_ocr)
-
-                if not original_text:
-                    print("  No text found by OCR. Skipping transliteration for this bubble.")
-                    continue
-
-                # --- Step 4: Transliterate to Shavian ---
-                shavian_text = transliterate_to_shavian(original_text)
-
-                if not shavian_text:
-                    print("  Transliteration failed or returned empty. Skipping drawing for this bubble.")
-                    continue
-
-                # --- Step 5: Draw Shavian Text ---
+            for i, bubble in enumerate(bubbles):
+                print(f"\nProcessing Bubble {i+1} (bbox: {bubble['bbox']})")
+                # One bad bubble shouldn't lose the whole image
                 try:
-                    # Ensure mask is 'L' mode (single channel) for numpy indexing
-                    fill_mask = bubble_info['mask'].convert('L')
-                    mask_np = np.array(fill_mask)
-                    # Original image should already be RGBA from loading
-                    original_np = np.array(original_image)
-
-                    # Select pixels from the original RGBA image where the mask is white (>128)
-                    pixels_in_bubble = original_np[mask_np > 128]
-
-                    if pixels_in_bubble.size > 0:
-                        # Import Counter if not already done at the top of the script
-                        from collections import Counter
-                        # Pixels are likely RGBA tuples. Map numpy rows to tuples to make them hashable for Counter.
-                        color_counts = Counter(map(tuple, pixels_in_bubble))
-                        # Find the most common color tuple
-                        calculated_fill_color, _ = color_counts.most_common(1)[0]
-                        # Ensure the color has 4 components (RGBA) if needed, add alpha if missing (unlikely if original is RGBA)
-                        if len(calculated_fill_color) == 3:
-                            calculated_fill_color = (*calculated_fill_color, 255) # Add full opacity alpha
-                        print(f"  Calculated mode fill color: {calculated_fill_color}")
-                    else:
-                        # Fallback if no pixels are found under the mask (e.g., empty mask)
-                        print("  Warning: No pixels found under mask. Defaulting fill to white.")
-                        # Use the original FILL_COLOR or a default white
-                        calculated_fill_color = (255, 255, 255, 255)
-
-                    mask_np = np.array(fill_mask)
-                    binary_mask = Image.fromarray((mask_np > 128).astype(np.uint8) * 255, mode='L')
-
-                    # Create inset by using erosion-like effect with filters
-                    # Apply minimum filter multiple times to shrink the mask
-                    inset_pixels = 3
-                    blur_radius = 2
-                    inset_mask = binary_mask
-                    for _ in range(inset_pixels):
-                        inset_mask = inset_mask.filter(ImageFilter.MinFilter(size=3))
-
-                    # Apply Gaussian blur for smoothing and gradient effect
-                    smooth_mask = inset_mask.filter(ImageFilter.GaussianBlur(radius=blur_radius))
-
+                    process_bubble(original_image, image_rgb, output_image, bubble, f"{image_path.stem}_bubble_{i+1}")
                 except Exception as e:
-                    # Fallback in case of any error during color calculation
-                    print(f"  Error calculating mode color: {e}. Defaulting fill to white.")
-                    calculated_fill_color = (255, 255, 255, 255) # Use the original FILL_COLOR or a default white
-                # --- Fill the bubble area on the output image using the calculated mode color ---
-                # Create a solid fill color image matching the output image's mode and size
-                # Use the dynamically determined 'calculated_fill_color'
-                fill_img = Image.new(output_image.mode, output_image.size, calculated_fill_color)
-                # Paste the solid fill color onto the output image, but only where the mask is white
-                # The fill_mask (single channel 'L' mode) correctly masks the paste operation
-                output_image.paste(fill_img, (0, 0), smooth_mask)
+                    print(f"  Error processing bubble {i+1}: {e!r}; leaving it untouched.")
 
-                # Now draw the text on top of the filled area
-                # Re-create draw object if needed after paste? Usually not necessary.
-                draw_shavian_text_in_bubble(draw, bubble_info, shavian_text, shavian_font)
-
-
-            # --- Step 6: Save Output Image ---
-            output_filename = OUTPUT_DIR / f"{image_path.stem}_shavian.png" # Save as PNG to keep transparency
+            output_filename = OUTPUT_DIR / f"{image_path.stem}_shavian.png"
             output_image.save(output_filename)
             print(f"\nSaved modified image to: {output_filename}")
 
-
-        except FileNotFoundError:
-            print(f"Error: Input image not found at {image_path}. Skipping.")
         except Exception as e:
-            print(f"An unexpected error occurred processing {image_path.name}: {e}")
-            # Consider adding more specific error handling (e.g., for PIL errors, OCR errors)
+            print(f"An unexpected error occurred processing {image_path.name}: {e!r}")
 
     print("\n--- Pipeline Finished ---")
+
 
 if __name__ == "__main__":
     main()

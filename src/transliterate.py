@@ -14,10 +14,11 @@ import numpy as np
 from ultralytics import YOLO
 
 # machine vision OCR (from moondream2)
+import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # --- Knobs --- (this is stuff you can fiddle with)
-HARDWARE_ACCEL = "mps" # ...or 'cuda', for nvidia gpu's
+HARDWARE_ACCEL = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 TRANSCRIPTION_PROMPT = "Transcribe the text, all lowercase unless it is a proper name or place. If it doesn't seem like a sentence, return an empty string." #
 STARTING_CONFIDENCE_SEGMENTATION = 0.9
 

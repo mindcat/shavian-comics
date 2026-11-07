@@ -230,6 +230,8 @@ def download_file(url, file_path, description, should_extract=False, extract_to=
 
 def main():
     """Main function to download all files."""
+    # All paths in DOWNLOADS are relative to this script's directory
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
     print("▸ File Downloader Started")
     print("=" * 50)
 
@@ -248,7 +250,10 @@ def main():
 
         # Check if file already exists
         if os.path.exists(file_path):
-            response = input(f"\n▲ File '{file_path}' already exists. Overwrite? (y/N): ").strip().lower()
+            try:
+                response = input(f"\n▲ File '{file_path}' already exists. Overwrite? (y/N): ").strip().lower()
+            except EOFError:  # non-interactive: keep existing files
+                response = ""
             if response not in ['y', 'yes']:
                 print(f"▷ Skipping {file_path}")
                 continue

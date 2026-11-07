@@ -26,3 +26,7 @@ Temporary Items
 
 /src/models
 /src/dict/*.dict
+# Python / uv
+.venv/
+__pycache__/
+*.pyc
