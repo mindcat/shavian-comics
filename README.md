@@ -9,9 +9,21 @@ Install [uv](https://docs.astral.sh/uv/), then:
 uv sync                                  # Python 3.12 + dependencies (CUDA PyTorch on Linux/Windows)
 uv run python src/init.py                # download the speech-bubble model, dictionaries and fonts
 uv run python src/shavian-comics.py      # convert everything in src/img/in/ into src/img/out/
+uv run python src/compare.py             # run every backend side by side -> src/img/out/compare/index.html
 ```
 
-`init.py` grabs the .dict dictionaries from dechifro, the .pt machine vision model by kitsumed responsible for identifying our text bubbles, and comic-esque fonts from Haley Wakamatsu. The model and fonts are checked against pinned SHA-256 checksums. dechifro's incredible Shavian translation engine, `shaw.py`, is vendored in `src/` at a version tested with this pipeline. The first run also downloads the moondream2 OCR model (~4 GB) from Hugging Face.
+Each stage has interchangeable backends (`uv run python src/shavian-comics.py --help`):
+
+| stage | options |
+| --- | --- |
+| `--detector` | `yolo`: YOLO speech-bubble masks matched to moondream's bubble boxes · `ctd`: [comic-text-detector](https://github.com/dmMaze/comic-text-detector) text lines grouped by bubble (also finds text without a bubble) |
+| `--ocr` | `moondream` (moondream2) · `qwen` (Qwen3-VL-2B-Instruct) |
+| `--eraser` | `fill` (flat bubble colour) · `telea` (OpenCV inpainting) · `lama` ([LaMa](https://github.com/advimman/lama) inpainting) |
+| `--size` | `match` (match the original lettering height) · `fit` (largest size that fits) |
+
+Transliteration runs dechifro's `shaw.py` once per batch with spaCy part-of-speech tagging (`--no-pos` turns it off). Everything runs offline once the models are downloaded; set `HF_HUB_OFFLINE=1` to make sure.
+
+`init.py` grabs the .dict dictionaries from dechifro, the .pt machine vision model by kitsumed responsible for identifying our text bubbles, and comic-esque fonts from Haley Wakamatsu, plus the comic-text-detector and LaMa weights. The models and fonts are checked against pinned SHA-256 checksums. dechifro's incredible Shavian translation engine, `shaw.py`, is vendored in `src/` at a version tested with this pipeline. The first run also downloads the moondream2 OCR model (~4 GB) from Hugging Face.
 
 ## credit/dependecies & appreciation
 

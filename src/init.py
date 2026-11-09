@@ -27,6 +27,18 @@ DOWNLOADS = {
         "description": "Machine vision model for identifying and cutting out speech bubbles.",
         "extract": False
     },
+    "https://github.com/zyddnys/manga-image-translator/releases/download/beta-0.3/comictextdetector.pt.onnx": {
+        "path": "./models/comictextdetector.pt.onnx",
+        "sha256": "1a86ace74961413cbd650002e7bb4dcec4980ffa21b2f19b86933372071d718f",
+        "description": "comic-text-detector (dmMaze, GPL-3.0): finds text lines and text pixels in comics.",
+        "extract": False
+    },
+    "https://github.com/Sanster/models/releases/download/add_big_lama/big-lama.pt": {
+        "path": "./models/big-lama.pt",
+        "sha256": "344c77bbcb158f17dd143070d1e789f38a66c04202311ae3a258ef66667a9ea9",
+        "description": "LaMa inpainting model (Apache-2.0), for erasing text over artwork.",
+        "extract": False
+    },
     "https://dechifro.org/shavian/amer.dict.xz": {
         "path": "./dict/tmp/amer.dict.xz",
         "description": "English -> Shavian phonemes as pronounced by an American",
