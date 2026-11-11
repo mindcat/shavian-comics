@@ -59,4 +59,9 @@ def _paste(image, rgb, mask, box):
     image.paste(patch, box[:2], m)
 
 
-BACKENDS = {"fill": fill, "telea": telea, "lama": lama}
+def auto(image, region):
+    """Flat fill inside bubbles (exact), LaMa for text over artwork or panel backgrounds."""
+    (fill if region.kind == "bubble" else lama)(image, region)
+
+
+BACKENDS = {"auto": auto, "fill": fill, "telea": telea, "lama": lama}

@@ -15,7 +15,7 @@ import numpy as np
 from scipy import ndimage
 
 from . import models
-from .regions import Region, colour_region, dominant_colour, rect_mask
+from .regions import Region, colour_region, dominant_colour, letter_height, rect_mask
 
 INPUT_SIZE = 1024
 SEG_THRESHOLD = 0.4
@@ -136,8 +136,77 @@ def group_free_lines(lines):
     return groups
 
 
-def detect(image):
-    """Returns (regions, skipped) where skipped is a list of (box, reason)."""
+def find_bubble(image_rgb, box, ink_wide, typical):
+    """(bubble interior, bg colour) if the text in `box` sits in a closed-off bubble, else None."""
+    lh = box[3] - box[1]
+    seed = rect_mask(image_rgb.shape, box)
+    between = seed & ~ink_wide  # background between the letters (bold text would skew the colour)
+    bg = dominant_colour(image_rgb[between if between.sum() > 20 else seed])
+    found = colour_region(image_rgb, seed, bg=bg, margin=int(BUBBLE_SEARCH * min(lh, 2 * typical)))
+    if found is None:
+        return None
+    filled, raw, bg, enclosed = found
+    holes = filled & ~raw & ~ink_wide
+    if enclosed and (filled & seed).sum() >= 0.9 * seed.sum() and holes.sum() <= MAX_NONTEXT_HOLES * filled.sum() \
+            and solidity(filled) >= MIN_SOLIDITY:
+        return filled, bg
+    return None
+
+
+def bubble_region(ink, interior, bg, lines, note=""):
+    text = ink & np.logical_or.reduce([rect_mask(ink.shape, l, pad=2) for l in lines])
+    return Region(
+        kind="bubble", box=union_box(lines), layout_mask=interior,
+        erase_mask=ndimage.binary_erosion(interior, iterations=1), text_mask=text, bg=bg,
+        letter_height=float(np.median([l[3] - l[1] for l in lines])), note=note or f"{len(lines)} line(s) in bubble",
+    )
+
+
+def free_region(image_rgb, ink, lines, note=""):
+    shape = ink.shape
+    box = union_box(lines)
+    lh = float(np.median([l[3] - l[1] for l in lines]))
+    text = ink & np.logical_or.reduce([rect_mask(shape, l, pad=2) for l in lines])
+    around = rect_mask(shape, box, pad=int(0.5 * lh)) & ~ndimage.binary_dilation(text, iterations=2)
+    bg = dominant_colour(image_rgb[around]) if around.any() else (255, 255, 255)
+    return Region(
+        kind="free", box=box, layout_mask=rect_mask(shape, box, pad=int(0.3 * lh)),
+        erase_mask=ndimage.binary_dilation(text, iterations=3), text_mask=text, bg=bg,
+        letter_height=lh, note=note or f"{len(lines)} free line(s)",
+    )
+
+
+def region_from_box(ctx, box, note="added by hand"):
+    """
+    A region for an arbitrary box (a skipped detection, or one drawn by the user):
+    the text pixels inside it, in its bubble if it's in one, otherwise as free text.
+    """
+    image_rgb, ink, ink_wide = ctx["image_rgb"], ctx["ink"], ctx["ink_wide"]
+    h, w = ink.shape
+    x1, y1, x2, y2 = (int(round(v)) for v in box)
+    x1, y1, x2, y2 = max(0, x1), max(0, y1), min(w, x2), min(h, y2)
+    inside = ink[y1:y2, x1:x2]
+    if inside.any():  # tighten to the text inside the box
+        ys, xs = np.nonzero(inside)
+        x1, y1, x2, y2 = x1 + xs.min(), y1 + ys.min(), x1 + xs.max() + 1, y1 + ys.max() + 1
+    tight = (int(x1), int(y1), int(x2), int(y2))
+    found = find_bubble(image_rgb, tight, ink_wide, ctx["typical"])
+    if found is not None:
+        r = bubble_region(ink, found[0], found[1], [tight], note)
+    else:
+        r = free_region(image_rgb, ink, [tight], note)
+    # One "line" spanning several lines over-estimates the letter size; use the pixels instead
+    lh = letter_height(r.text_mask)
+    if lh:
+        r.letter_height = lh
+    return r
+
+
+def detect(image, ctx=None):
+    """
+    Returns (regions, skipped) where skipped is a list of (box, reason). If a dict
+    is passed as ctx, it's filled with what region_from_box() needs later.
+    """
     image_rgb = np.array(image.convert("RGB"))
     shape = image_rgb.shape[:2]
     seg, det = run_ctd(image_rgb)
@@ -150,21 +219,8 @@ def detect(image):
     # "Typical" from the lower part of the distribution: sound-effect-heavy pages skew the median
     typical = float(np.percentile([b[3] - b[1] for b in lines], 35))
 
-    def container(b):
-        """(bubble interior, bg colour) if line b sits in a closed-off bubble, else None."""
-        lh = b[3] - b[1]
-        seed = rect_mask(shape, b)
-        between = seed & ~ink_wide  # background between the letters (bold text would skew the colour)
-        bg = dominant_colour(image_rgb[between if between.sum() > 20 else seed])
-        found = colour_region(image_rgb, seed, bg=bg, margin=int(BUBBLE_SEARCH * min(lh, 2 * typical)))
-        if found is None:
-            return None
-        filled, raw, bg, enclosed = found
-        holes = filled & ~raw & ~ink_wide
-        if enclosed and (filled & seed).sum() >= 0.9 * seed.sum() and holes.sum() <= MAX_NONTEXT_HOLES * filled.sum() \
-                and solidity(filled) >= MIN_SOLIDITY:
-            return filled, bg
-        return None
+    if ctx is not None:
+        ctx.update(image_rgb=image_rgb, ink=ink, ink_wide=ink_wide, typical=typical)
 
     skipped, normal, containers = [], [], []
     for b in lines:
@@ -175,7 +231,7 @@ def detect(image):
         if lh > 2.5 * lw and lh > 1.5 * typical:
             skipped.append((b, "vertical text"))
             continue
-        c = container(b)
+        c = find_bubble(image_rgb, b, ink_wide, typical)
         if lh > SFX_RATIO * typical and c is None:
             skipped.append((b, "sound effect / logo"))  # big lettering is fine if it's in a bubble (shouting)
             continue
@@ -203,25 +259,9 @@ def detect(image):
         if interior.sum() > MAX_BUBBLE_AREA * (box[2] - box[0]) * (box[3] - box[1]):
             free_lines.extend(group)  # too roomy to be this text's bubble (e.g. a whole plain panel)
             continue
-        text = ink & np.logical_or.reduce([rect_mask(shape, l, pad=2) for l in group])
-        regions.append(Region(
-            kind="bubble", box=box, layout_mask=interior,
-            erase_mask=ndimage.binary_erosion(interior, iterations=1), text_mask=text, bg=bg,
-            letter_height=float(np.median([l[3] - l[1] for l in group])),
-            note=f"{len(group)} line(s) in bubble",
-        ))
-
+        regions.append(bubble_region(ink, interior, bg, group))
     for group in group_free_lines(free_lines):
-        box = union_box(group)
-        lh = float(np.median([l[3] - l[1] for l in group]))
-        text = ink & np.logical_or.reduce([rect_mask(shape, l, pad=2) for l in group])
-        around = rect_mask(shape, box, pad=int(0.5 * lh)) & ~ndimage.binary_dilation(text, iterations=2)
-        bg = dominant_colour(image_rgb[around]) if around.any() else (255, 255, 255)
-        regions.append(Region(
-            kind="free", box=box, layout_mask=rect_mask(shape, box, pad=int(0.3 * lh)),
-            erase_mask=ndimage.binary_dilation(text, iterations=3), text_mask=text, bg=bg,
-            letter_height=lh, note=f"{len(group)} free line(s)",
-        ))
+        regions.append(free_region(image_rgb, ink, group))
 
     print(f"  [ctd] {len(lines)} lines -> {len(regions)} regions "
           f"({sum(r.kind == 'bubble' for r in regions)} bubbles), {len(skipped)} lines skipped")

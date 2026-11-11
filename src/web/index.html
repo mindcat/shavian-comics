@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shavian Comics</title>
+<link rel="stylesheet" href="web/style.css">
+</head>
+<body>
+<header>
+  <h1>Shavian Comics <span class="shaw">·𐑖𐑱𐑝𐑾𐑯</span></h1>
+  <div id="status" class="status">connecting…</div>
+</header>
+
+<main>
+  <section id="drop" class="drop">
+    <input id="file" type="file" accept="image/*" hidden>
+    <p><strong>Drop a comic here</strong>, paste one, or <button id="pick" class="link">choose a file</button>.</p>
+    <p class="hint">Text is found, read and transliterated automatically; you can then fix anything below.</p>
+  </section>
+
+  <section id="work" hidden>
+    <div id="steps" class="steps">
+      <span data-step="detect">1 · Find text</span>
+      <span data-step="read">2 · Read</span>
+      <span data-step="render">3 · Typeset</span>
+    </div>
+
+    <div class="layout">
+      <div class="viewer-col">
+        <div class="toolbar">
+          <div class="tabs" role="tablist">
+            <button data-view="original">Original</button>
+            <button data-view="regions" class="active">Regions</button>
+            <button data-view="erased">Erased</button>
+            <button data-view="final">Shavian</button>
+          </div>
+          <div class="actions">
+            <button id="addbox" title="Drag a box over text that was missed">+ Box</button>
+            <button id="download" class="primary" disabled>Download</button>
+          </div>
+        </div>
+        <div id="viewer" class="viewer">
+          <img id="img" alt="">
+          <svg id="overlay" xmlns="http://www.w3.org/2000/svg"></svg>
+          <div id="busy" class="busy" hidden></div>
+        </div>
+        <p class="legend"><i class="sw bubble"></i>bubble <i class="sw free"></i>text on artwork
+          <i class="sw off"></i>skipped (tick to include) · tap a region to edit it</p>
+      </div>
+
+      <div class="regions-col">
+        <div class="regions-head">
+          <h2>Regions <span id="count"></span></h2>
+          <button id="another" class="link">new comic</button>
+        </div>
+        <div id="regions"></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<template id="card">
+  <article class="card">
+    <div class="card-head">
+      <label><input type="checkbox" class="enabled"> <b class="num"></b></label>
+      <span class="kind"></span>
+      <span class="note"></span>
+      <button class="del link" title="Remove this region">remove</button>
+    </div>
+    <label class="field">English <textarea class="english" rows="2" placeholder="(not read yet)"></textarea></label>
+    <label class="field">Shavian <textarea class="shavian shaw" rows="2"></textarea></label>
+    <div class="opts">
+      <label>Erase <select class="eraser">
+        <option value="auto">auto</option><option value="fill">flat fill</option>
+        <option value="lama">LaMa</option><option value="telea">OpenCV</option></select></label>
+      <label>Size <select class="size">
+        <option value="match">match original</option><option value="fit">as big as fits</option>
+        <option value="custom">custom…</option></select></label>
+      <input class="px" type="number" min="6" max="200" step="1" hidden> <span class="fs"></span>
+    </div>
+  </article>
+</template>
+
+<script src="web/app.js"></script>
+</body>
+</html>

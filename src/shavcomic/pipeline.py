@@ -41,25 +41,36 @@ def translit_all(detections_list, backend, pos_tagging=True, key=None):
         r.shavian[key] = s
 
 
+def _setting(r, name, default):
+    value = getattr(r, "settings", {}).get(name)
+    return default if value is None or value == "" else value
+
+
 def erase_only(image, regions, eraser, shavian_key):
     out = image.copy()
     for r in regions:
-        if r.shavian.get(shavian_key):
+        if r.shavian.get(shavian_key) and _setting(r, "enabled", True):
             try:
-                erase.BACKENDS[eraser](out, r)
+                erase.BACKENDS[_setting(r, "eraser", eraser)](out, r)
             except Exception:
                 print(f"  erase failed for region {r.box}:\n{traceback.format_exc()}")
     return out
 
 
-def render(image, regions, eraser, shavian_key, size_mode="match"):
-    """Erase + typeset every region that has Shavian text. Regions without text are left alone."""
+def render(image, regions, eraser, shavian_key, size_mode="match", draw=True):
+    """
+    Erase + typeset every region that has Shavian text. Regions without text are left
+    alone. A region's optional `settings` dict ({"enabled", "eraser", "size"}) overrides
+    the defaults for that region.
+    """
     out = erase_only(image, regions, eraser, shavian_key)
+    if not draw:
+        return out
     for r in regions:
         text = r.shavian.get(shavian_key)
-        if text:
+        if text and _setting(r, "enabled", True):
             try:
-                r.note_layout = layout.draw_text(out, r, text, size_mode)
+                r.note_layout, r.font_size = layout.draw_text(out, r, text, _setting(r, "size", size_mode))
             except Exception:
                 print(f"  layout failed for region {r.box}:\n{traceback.format_exc()}")
     return out

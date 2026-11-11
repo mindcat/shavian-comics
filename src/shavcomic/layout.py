@@ -114,20 +114,35 @@ def fit_text(draw, text, area, max_size=None):
     return best
 
 
+def forced_layout(draw, text, area, size):
+    """Exactly `size` px, wrapped to the area's width and centred in it (may overflow)."""
+    f = font(size)
+    ys, xs = np.nonzero(area)
+    lines = wrap_words(text.split(), f, np.ptp(xs) * 0.95, draw) or [text]
+    dist = ndimage.distance_transform_edt(area)
+    cy, cx = np.unravel_index(np.argmax(dist), dist.shape)
+    return f, lines, (float(cx), float(cy))
+
+
 def draw_text(image, region, text, size_mode="match"):
-    """Draws `text` into the region. size_mode: "fit" (as big as fits) or "match" (original size)."""
+    """
+    Draws `text` into the region. size_mode: "fit" (as big as fits), "match"
+    (the original lettering size, smaller if needed) or an int (exactly that size).
+    """
     draw = ImageDraw.Draw(image)
-    max_size = None
-    if size_mode == "match" and region.letter_height:
-        max_size = size_for_letter_height(region.letter_height)
-    fitted = fit_text(draw, text, region.layout_mask, max_size)
-    if fitted is None:
-        f = font(MIN_FONT_SIZE)
-        cy, cx = ndimage.center_of_mass(region.layout_mask)
-        lines, center = [text], (cx, cy)
-        note = "didn't fit"
+    if isinstance(size_mode, int) or (isinstance(size_mode, str) and size_mode.isdigit()):
+        f, lines, center = forced_layout(draw, text, region.layout_mask, int(size_mode))
+        note = f"{f.size}px (set by hand)"
     else:
-        f, lines, center = fitted
-        note = f"{f.size}px" + (f" (target {max_size}px)" if max_size else "")
+        max_size = None
+        if size_mode == "match" and region.letter_height:
+            max_size = size_for_letter_height(region.letter_height)
+        fitted = fit_text(draw, text, region.layout_mask, max_size)
+        if fitted is None:
+            f, lines, center = forced_layout(draw, text, region.layout_mask, MIN_FONT_SIZE)
+            note = "didn't fit"
+        else:
+            f, lines, center = fitted
+            note = f"{f.size}px" + (f" (target {max_size}px)" if max_size else "")
     draw.multiline_text(center, "\n".join(lines), font=f, fill=config.TEXT_COLOR, anchor="mm", align="center")
-    return note
+    return note, f.size
