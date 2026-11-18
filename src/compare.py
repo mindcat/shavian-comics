@@ -1,26 +1,33 @@
 #!/usr/bin/env python3
 """
-Runs both pipelines over the test strips and writes a side-by-side HTML report,
-stage by stage, to src/img/out/compare/index.html.
+Compares OCR backends on the test strips and writes an HTML report to
+src/img/out/compare/index.html (also served at /report/ by server.py).
 
-  A = YOLO bubbles + moondream          B = comic-text-detector text lines
+Detection is comic-text-detector (pipeline B); each OCR backend's text is
+transliterated and typeset (auto eraser, matched size) so they can be judged
+side by side. Backends that aren't available (e.g. Groq without a key) are
+listed in the report with the reason.
 
-Stages compared: detection (A vs B), OCR (moondream vs Qwen, on both), POS
-tagging (off vs on), erasing (fill / telea / LaMa) and final output.
-
-    uv run python src/compare.py [image ...]
+    uv run python src/compare.py [--ocr qwen,florence,groq] [--detector ctd] [--cpu-bench] [image ...]
 """
+import argparse
 import html
 import sys
 import time
+import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from shavcomic import config, models, pipeline  # noqa: E402
+from shavcomic import config, models, ocr, pipeline  # noqa: E402
 
 OUT = config.OUTPUT_DIR / "compare"
-ERASERS = ["fill", "telea", "lama"]
+LABELS = {
+    "qwen": "Qwen3-VL-2B (local)",
+    "florence": "Florence-2 (local)",
+    "groq": "Groq (hosted API)",
+    "moondream": "moondream2 (local)",
+}
 
 
 def save(img, name, stem):
@@ -30,57 +37,84 @@ def save(img, name, stem):
     return f"{stem}/{name}.png"
 
 
+def cpu_bench(images, det, n=6):
+    """Seconds per region for Florence-2 base/large on CPU (what a free hosted Space would have)."""
+    import torch
+
+    results = {}
+    crops = [ocr.crop_for_ocr(images[s], r) for s, (regs, _) in det.items() for r in regs][:n]
+    saved = (config.DEVICE, config.FLORENCE_ID)
+    threads = torch.get_num_threads()
+    torch.set_num_threads(2)  # a free Hugging Face Space has 2 vCPUs
+    try:
+        for mid in ("florence-community/Florence-2-base", "florence-community/Florence-2-large"):
+            config.DEVICE, config.FLORENCE_ID = "cpu", mid
+            models.unload("florence")
+            ocr.BACKENDS["florence"](crops[:1])  # warm up
+            t = time.time()
+            ocr.BACKENDS["florence"](crops)
+            results[mid.split("/")[-1]] = (time.time() - t) / len(crops)
+            models.unload("florence")
+    finally:
+        config.DEVICE, config.FLORENCE_ID = saved
+        torch.set_num_threads(threads)
+    return results
+
+
 def main():
-    args = [Path(a) for a in sys.argv[1:]]
-    paths = args or sorted(p for ext in ("png", "jpg", "jpeg", "webp") for p in config.INPUT_DIR.glob(f"*.{ext}"))
+    ap = argparse.ArgumentParser()
+    ap.add_argument("images", nargs="*", type=Path)
+    ap.add_argument("--ocr", default="qwen,florence,groq")
+    ap.add_argument("--detector", default="ctd", choices=list(pipeline.DETECTORS))
+    ap.add_argument("--cpu-bench", action="store_true", help="also time Florence-2 on 2 CPU threads")
+    args = ap.parse_args()
+
+    paths = args.images or sorted(p for ext in ("png", "jpg", "jpeg", "webp") for p in config.INPUT_DIR.glob(f"*.{ext}"))
     images = pipeline.load_images(paths)
-    timings = {}
+    backends = [b.strip() for b in args.ocr.split(",") if b.strip()]
+    timings, unavailable = {}, {}
 
-    def timed(label, fn, *a, **k):
-        t = time.time()
-        r = fn(*a, **k)
-        timings[label] = timings.get(label, 0) + time.time() - t
-        return r
-
-    # Detection + moondream OCR (moondream is already loaded for pipeline A's detection)
-    det = {"A": timed("detect A (yolo+moondream)", pipeline.detect_all, images, "yolo"),
-           "B": timed("detect B (ctd)", pipeline.detect_all, images, "ctd")}
-    for p in "AB":
-        timed("ocr moondream", pipeline.ocr_all, images, det[p], "moondream")
+    t = time.time()
+    det = pipeline.detect_all(images, args.detector)
+    timings[f"detect ({args.detector})"] = time.time() - t
     models.unload("moondream")
-    for p in "AB":
-        timed("ocr qwen", pipeline.ocr_all, images, det[p], "qwen")
-    models.unload("qwen")
 
-    both = [det["A"], det["B"]]
-    timed("transliterate", pipeline.translit_all, both, "moondream")
-    timed("transliterate", pipeline.translit_all, both, "qwen")
-    timed("transliterate", pipeline.translit_all, both, "moondream", pos_tagging=False, key="moondream-nopos")
+    n_regions = sum(len(r) for r, _ in det.values())
+    ran = []
+    for b in backends:
+        if b == "groq" and not config.groq_key():
+            unavailable[b] = f"no API key (set GROQ_API_KEY or write it to {config.GROQ_KEY_FILE})"
+            continue
+        t = time.time()
+        try:
+            pipeline.ocr_all(images, det, b)
+        except Exception as e:
+            unavailable[b] = f"failed: {e}"
+            traceback.print_exc()
+            continue
+        timings[f"ocr {b}"] = time.time() - t
+        ran.append(b)
+        models.unload("qwen", "florence", "moondream")
+        pipeline.translit_all([det], b)
+
+    bench = cpu_bench(images, det) if args.cpu_bench else {}
 
     report = {}
     for stem, img in images.items():
         print(f"[render] {stem}")
-        rep = report[stem] = {"original": save(img, "0-original", stem)}
-        for p in "AB":
-            regions, skipped = det[p][stem]
-            rep[f"{p}-detect"] = save(pipeline.overlay(img, regions, skipped), f"1-{p}-detect", stem)
-            for e in ERASERS:
-                rep[f"{p}-erase-{e}"] = save(timed(f"erase {e}", pipeline.erase_only, img, regions, e, "moondream"),
-                                             f"2-{p}-erase-{e}", stem)
-        a_regions = det["A"][stem][0]
-        rep["A-baseline"] = save(pipeline.render(img, a_regions, "fill", "moondream-nopos", "fit"), "3-A-baseline", stem)
-        for p in "AB":
-            for e in ("fill", "lama"):
-                rep[f"{p}-final-{e}"] = save(
-                    pipeline.render(img, det[p][stem][0], e, "moondream", "match"), f"3-{p}-final-{e}", stem)
-        rep["B-final-lama-qwen"] = save(
-            pipeline.render(img, det["B"][stem][0], "lama", "qwen", "match"), "3-B-final-lama-qwen", stem)
+        regions, skipped = det[stem]
+        rep = report[stem] = {"original": save(img, "0-original", stem),
+                              "detect": save(pipeline.overlay(img, regions, skipped), "1-detect", stem)}
+        for b in ran:
+            rep[b] = save(pipeline.render(img, regions, "auto", b, "match"), f"3-final-{b}", stem)
     models.unload()
 
-    write_html(images, det, report, timings)
+    write_html(images, det, report, ran, unavailable, timings, n_regions, bench)
     print(f"\nReport: {OUT / 'index.html'}")
     for k, v in timings.items():
-        print(f"  {k:28s} {v:7.1f}s")
+        print(f"  {k:24s} {v:7.1f}s")
+    for k, v in bench.items():
+        print(f"  CPU (2 threads) {k}: {v:.1f}s/region")
 
 
 def fig(src, caption):
@@ -88,68 +122,60 @@ def fig(src, caption):
             f"<figcaption>{html.escape(caption)}</figcaption></figure>")
 
 
-def region_table(regions, label):
+def region_table(regions, ran):
+    head = "".join(f"<th>{html.escape(LABELS.get(b, b))}</th>" for b in ran)
     rows = []
     for i, r in enumerate(regions, 1):
-        md, qw = r.ocr.get("moondream", ""), r.ocr.get("qwen", "")
-        diff = ' class="diff"' if md.lower() != qw.lower() else ""
-        nopos, pos = r.shavian.get("moondream-nopos", ""), r.shavian.get("moondream", "")
-        rows.append(
-            f"<tr><td>{i}</td><td>{r.kind}<br><small>{html.escape(r.note)}<br>"
-            f"letters ~{r.letter_height:.0f}px</small></td>"
-            f"<td{diff}>{html.escape(md) or '<em>(none)</em>'}</td><td{diff}>{html.escape(qw) or '<em>(none)</em>'}</td>"
-            f"<td class='shaw'>{html.escape(pos)}</td>"
-            f"<td class='shaw'>{html.escape(r.shavian.get('qwen', ''))}</td>"
-            + (f"<td class='shaw diff'>{html.escape(nopos)}</td>" if nopos != pos else "<td><small>same</small></td>")
-            + "</tr>")
-    return (f"<h4>{label}</h4><table><tr><th>#</th><th>region</th><th>moondream OCR</th><th>Qwen OCR</th>"
-            "<th>Shavian (moondream, POS)</th><th>Shavian (Qwen, POS)</th><th>without POS tagging</th></tr>"
-            + "".join(rows) + "</table>")
+        texts = [r.ocr.get(b, "") for b in ran]
+        differ = len({t.lower().strip(" .!?") for t in texts}) > 1
+        cells = "".join(
+            f"<td{' class=diff' if differ else ''}>{html.escape(r.ocr.get(b, '')) or '<em>(none)</em>'}"
+            f"<div class='shaw'>{html.escape(r.shavian.get(b, ''))}</div></td>" for b in ran)
+        rows.append(f"<tr><td>{i}</td><td>{r.kind}<br><small>{html.escape(r.note)}</small></td>{cells}</tr>")
+    return f"<table><tr><th>#</th><th>region</th>{head}</tr>{''.join(rows)}</table>"
 
 
-def write_html(images, det, report, timings):
-    parts = []
+def write_html(images, det, report, ran, unavailable, timings, n_regions, bench):
     nav = " · ".join(f'<a href="#{html.escape(s)}">{html.escape(s)}</a>' for s in images)
+    agree = sum(1 for regs, _ in det.values() for r in regs
+                if len({r.ocr.get(b, "").lower().strip(" .!?") for b in ran}) == 1)
+    summary = [f"<li>{n_regions} text regions across {len(images)} strips; all OCR backends agree (ignoring case and end punctuation) on {agree}.</li>"]
+    for b in ran:
+        summary.append(f"<li>{html.escape(LABELS.get(b, b))}: {timings[f'ocr {b}']:.0f}s total, "
+                       f"{timings[f'ocr {b}'] / max(n_regions, 1):.2f}s per region on {config.DEVICE if b != 'groq' else 'Groq'}</li>")
+    for b, why in unavailable.items():
+        summary.append(f"<li><b>{html.escape(LABELS.get(b, b))} not run:</b> {html.escape(why)}</li>")
+    for k, v in bench.items():
+        summary.append(f"<li>CPU, 2 threads (like a free Hugging Face Space): {html.escape(k)} {v:.1f}s per region</li>")
+
+    parts = []
     for stem in images:
         rep = report[stem]
-        a_regs, a_skip = det["A"][stem]
-        b_regs, b_skip = det["B"][stem]
+        regs, skip = det[stem]
+        finals = "".join(fig(rep[b], LABELS.get(b, b)) for b in ran)
         parts.append(f"""
 <section id="{html.escape(stem)}"><h2>{html.escape(stem)}</h2>
-<h3>1 · Detection</h3>
-<p class="legend">green = bubble, orange = free text (B only), red = text pixels, grey box = found but skipped. Numbers match the tables.</p>
-<div class="row">{fig(rep['original'], 'original')}
-{fig(rep['A-detect'], f'A: YOLO + moondream — {len(a_regs)} regions, {len(a_skip)} skipped')}
-{fig(rep['B-detect'], f'B: comic-text-detector — {len(b_regs)} regions, {len(b_skip)} skipped')}</div>
-<details><summary>skipped detections</summary><ul>
-{''.join(f'<li>A {b}: {html.escape(why)}</li>' for b, why in a_skip)}
-{''.join(f'<li>B {b}: {html.escape(why)}</li>' for b, why in b_skip)}</ul></details>
-<h3>2 · OCR and transliteration</h3>
-<p class="legend">Yellow = the two OCR models disagree / POS tagging changed the Shavian.</p>
-{region_table(a_regs, 'A regions')}
-{region_table(b_regs, 'B regions')}
-<h3>3 · Erasing (moondream text, regions with text only)</h3>
-<div class="row">{''.join(fig(rep[f'A-erase-{e}'], f'A + {e}') for e in ERASERS)}</div>
-<div class="row">{''.join(fig(rep[f'B-erase-{e}'], f'B + {e}') for e in ERASERS)}</div>
-<h3>4 · Final</h3>
-<div class="row">{fig(rep['A-baseline'], 'A baseline: previous commit (fill, fit sizing, no POS)')}
-{fig(rep['A-final-fill'], 'A: fill, matched size, POS')}{fig(rep['A-final-lama'], 'A: LaMa, matched size, POS')}</div>
-<div class="row">{fig(rep['B-final-fill'], 'B: fill, matched size, POS')}{fig(rep['B-final-lama'], 'B: LaMa, matched size, POS')}
-{fig(rep['B-final-lama-qwen'], 'B: LaMa, matched size, POS, Qwen OCR')}</div>
+<div class="row">{fig(rep['original'], 'original')}{fig(rep['detect'], f'detection: {len(regs)} regions, {len(skip)} skipped')}</div>
+<h3>OCR → Shavian</h3>
+<p class="legend">Yellow = the backends disagree. Numbers match the detection image.</p>
+{region_table(regs, ran)}
+<h3>Final, per OCR backend</h3>
+<div class="row">{finals}</div>
 </section>""")
-    t = "".join(f"<li>{html.escape(k)}: {v:.1f}s</li>" for k, v in timings.items())
-    page = f"""<!doctype html><html><head><meta charset="utf-8"><title>Pipeline comparison</title>
+    page = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OCR comparison</title>
 <style>
 body{{font:14px/1.45 system-ui,sans-serif;margin:16px;background:#f6f6f4;color:#222}}
-section{{background:#fff;border-radius:8px;padding:12px 16px;margin:18px 0;box-shadow:0 1px 3px #0002}}
-.row{{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:10px;margin:8px 0}}
+section,.summary{{background:#fff;border-radius:8px;padding:12px 16px;margin:18px 0;box-shadow:0 1px 3px #0002}}
+.row{{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px;margin:8px 0}}
 figure{{margin:0}} img{{width:100%;border:1px solid #ccc}} figcaption{{font-size:12px;color:#555}}
-table{{border-collapse:collapse;width:100%;font-size:13px;margin-bottom:10px}}
-td,th{{border:1px solid #ddd;padding:4px 6px;vertical-align:top;text-align:left}}
-.shaw{{font-size:16px}} .diff{{background:#fff4c2}} .legend{{color:#666;font-size:12px}}
-nav{{position:sticky;top:0;background:#f6f6f4;padding:6px 0;z-index:1}}
-</style></head><body><h1>Shavian comics: pipeline A vs B</h1>
-<nav>{nav}</nav><details><summary>timings</summary><ul>{t}</ul></details>{''.join(parts)}</body></html>"""
+table{{border-collapse:collapse;width:100%;font-size:13px}} td,th{{border:1px solid #ddd;padding:4px 6px;vertical-align:top;text-align:left}}
+.shaw{{font-size:16px;margin-top:3px}} .diff{{background:#fff4c2}} .legend{{color:#666;font-size:12px}}
+nav{{position:sticky;top:0;background:#f6f6f4;padding:6px 0;z-index:1;overflow-x:auto;white-space:nowrap}}
+@media (prefers-color-scheme: dark){{body{{background:#161615;color:#e8e7e2}} section,.summary{{background:#222120}} nav{{background:#161615}}
+td,th{{border-color:#3a3936}} .diff{{background:#4a4220}} figcaption,.legend{{color:#a3a29c}}}}
+</style></head><body><h1>OCR comparison (comic-text-detector + auto eraser)</h1>
+<nav>{nav}</nav><div class="summary"><ul>{''.join(summary)}</ul></div>{''.join(parts)}</body></html>"""
     (OUT / "index.html").write_text(page, encoding="utf-8")
 
 

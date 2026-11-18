@@ -15,7 +15,7 @@ def _get(name, loader):
     return _cache[name]
 
 
-def unload(*names):
+def unload(*names):  # noqa: D401
     for name in names or list(_cache):
         if _cache.pop(name, None) is not None:
             print(f"[models] unloaded {name}")
@@ -49,6 +49,17 @@ def qwen():
         return model, processor
 
     return _get("qwen", load)
+
+
+def florence():
+    def load():
+        from transformers import AutoProcessor, Florence2ForConditionalGeneration
+
+        dtype = torch.float16 if config.DEVICE == "cuda" else torch.float32
+        model = Florence2ForConditionalGeneration.from_pretrained(config.FLORENCE_ID, dtype=dtype)
+        return model.to(config.DEVICE).eval(), AutoProcessor.from_pretrained(config.FLORENCE_ID)
+
+    return _get("florence", load)
 
 
 def yolo():

@@ -83,6 +83,36 @@ def engine(pos_tagging=True):
         return _engines[key]
 
 
+def _dictionary():
+    return engine().globals["dict"]
+
+
+def known_word(word):
+    d = _dictionary()
+    return word.lower() in d or word.capitalize() in d
+
+
+def recase(text):
+    """
+    Sentence-style casing for text OCR'd in capitals: lowercase, then restore
+    capitals for "I" and for words the dictionary only knows capitalised (names,
+    places), since Shavian marks those with a namer dot.
+    """
+    d = _dictionary()
+
+    def fix(m):
+        w = m.group(0)
+        low = w.lower()
+        if low == "i" or low.startswith("i'"):
+            return "I" + low[1:]
+        cap = low.capitalize()
+        if cap in d and low not in d:
+            return cap
+        return low
+
+    return re.sub(r"[A-Za-z]+(?:'[A-Za-z]+)?", fix, text)
+
+
 def resolve_alternatives(text):
     """shaw.py writes 'a@b' when it can't pick a pronunciation; take its first choice."""
     return re.sub(r"@" + SHAVIAN_WORD, "", text)

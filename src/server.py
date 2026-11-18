@@ -10,6 +10,7 @@ be hosted separately (e.g. GitHub Pages) and pointed at this server with ?api=UR
 """
 import argparse
 import io
+import os
 import sys
 import threading
 import time
@@ -33,7 +34,7 @@ from shavcomic import config, detect_ctd, layout, models, ocr, pipeline, transli
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
 REPORT_DIR = config.OUTPUT_DIR / "compare"
-OCR_BACKEND = "qwen"
+OCR_BACKEND = os.environ.get("SHAVIAN_OCR", "qwen")  # qwen (GPU) | florence (CPU-friendly) | groq (hosted API)
 MAX_JOBS = 20
 MAX_SIDE = 2400  # downscale bigger uploads
 
@@ -98,8 +99,10 @@ def get_job(job_id):
 def warm_up():
     """Load everything up front so the first upload isn't slow."""
     try:
+        ocr_loader = {"qwen": models.qwen, "florence": models.florence, "moondream": models.moondream}.get(
+            OCR_BACKEND, lambda: ocr.groq_model() if config.groq_key() else None)
         for name, fn in (("comic-text-detector", models.ctd), ("shaw.py + spaCy", translit.engine),
-                         ("Qwen OCR", models.qwen), ("LaMa", models.lama)):
+                         (f"{OCR_BACKEND} OCR", ocr_loader), ("LaMa", models.lama)):
             status["loading"] = name
             with gpu:
                 fn()
@@ -114,7 +117,9 @@ def warm_up():
 
 @app.get("/api/info")
 def info():
-    return {**status, "device": config.DEVICE, "ocr": config.QWEN_ID, "dictionary": config.DICTIONARY,
+    ocr_name = {"qwen": config.QWEN_ID, "florence": config.FLORENCE_ID, "moondream": config.MOONDREAM_ID}.get(
+        OCR_BACKEND, f"Groq {config.GROQ_MODEL or '(auto model)'}")
+    return {**status, "device": config.DEVICE, "ocr": ocr_name, "dictionary": config.DICTIONARY,
             "font": config.FONT, "fonts": sorted(p.name for p in config.FONT_DIR.glob("*.otf"))}
 
 
