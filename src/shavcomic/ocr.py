@@ -30,8 +30,8 @@ def crop_for_ocr(image, region):
 # Credits and signatures look like text but shouldn't be transliterated. The signature
 # is often misread ("by HATTERSON"), so any lone "by <name> [year]" counts as a credit.
 SKIP_TEXT = re.compile(
-    r"watterson|syndicat|distributed by|universal press|andrews mc ?meel|copyright"
-    r"|^by \w+( \d{4})?$"
+    r"\b[wh]?at+[ae]?rs[oa]n\b|wattsin|syndicat|distributed by|universal press|andrews mc ?meel|copyright|©"
+    r"|^by \S+( \S*\d{4})?$"
     r"|^(no text|empty|none|n/a)\.?$",
     re.I,
 )
@@ -124,41 +124,106 @@ def groq_model():
     raise RuntimeError(f"No vision model recognised among Groq's models; set GROQ_MODEL. Available: {ids}")
 
 
-def groq(crops):
-    """Hosted OCR through Groq's API (needs a key; images leave this machine)."""
-    import base64
-    import io
+SHEET_MAX_HEIGHT = 1600  # px; taller sheets risk being downscaled by the API
+SHEET_MAX_CROPS = 16
+
+
+def _groq_request(content, max_tokens, json_mode=False):
     import time
 
     import requests
 
-    key = config.groq_key()
-    if not key:
-        raise RuntimeError(f"No Groq key: set GROQ_API_KEY or put it in {config.GROQ_KEY_FILE}")
-    model = groq_model()
-    print(f"  [groq] model {model}")
+    payload = {"model": groq_model(), "temperature": 0, "max_completion_tokens": max_tokens,
+               "messages": [{"role": "user", "content": content}]}
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
+    for attempt in range(8):
+        r = requests.post(f"{GROQ_URL}/chat/completions", json=payload, timeout=120,
+                          headers={"Authorization": f"Bearer {config.groq_key()}"})
+        if r.status_code == 429:  # free-tier rate limit: wait as told, then retry
+            wait = float(r.headers.get("retry-after", 2 ** attempt))
+            print(f"  [groq] rate limited, waiting {wait:.0f}s")
+            time.sleep(wait)
+            continue
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"]
+    r.raise_for_status()
+
+
+def _data_url(image):
+    import base64
+    import io
+
+    buf = io.BytesIO()
+    image.convert("RGB").save(buf, "JPEG", quality=90)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def _sheets(crops):
+    """Group crops (shrunk back to 1x) into numbered sheets: [(first_index, sheet_image, n)]."""
+    from PIL import ImageDraw, ImageFont
+
+    small = [c.resize((max(1, c.width // 2), max(1, c.height // 2)), Image.Resampling.LANCZOS) for c in crops]
+    groups, cur, h = [], [], 0
+    for i, c in enumerate(small):
+        if cur and (h + c.height + 8 > SHEET_MAX_HEIGHT or len(cur) >= SHEET_MAX_CROPS):
+            groups.append(cur)
+            cur, h = [], 0
+        cur.append(i)
+        h += c.height + 8
+    if cur:
+        groups.append(cur)
+    try:
+        font = ImageFont.truetype("DejaVuSans-Bold.ttf", 20)
+    except OSError:
+        font = ImageFont.load_default()
     out = []
-    for c in crops:
-        buf = io.BytesIO()
-        c.convert("RGB").save(buf, "JPEG", quality=92)
-        payload = {
-            "model": model, "temperature": 0, "max_completion_tokens": 200,
-            "messages": [{"role": "user", "content": [
-                {"type": "text", "text": config.OCR_PROMPT + " Reply with the text only."},
-                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()}},
-            ]}],
-        }
-        for attempt in range(6):
-            r = requests.post(f"{GROQ_URL}/chat/completions", json=payload, timeout=60,
-                              headers={"Authorization": f"Bearer {key}"})
-            if r.status_code == 429:  # free-tier rate limit: wait as told, then retry
-                time.sleep(float(r.headers.get("retry-after", 2 ** attempt)))
-                continue
-            r.raise_for_status()
-            break
-        else:
-            r.raise_for_status()
-        out.append(_clean(r.json()["choices"][0]["message"]["content"]))
+    for g in groups:
+        label, pad = 40, 8
+        sheet = Image.new("RGB", (max(small[i].width for i in g) + label + pad, sum(small[i].height + pad for i in g)), "white")
+        d = ImageDraw.Draw(sheet)
+        y = 0
+        for n, i in enumerate(g, 1):
+            c = small[i]
+            d.rectangle((0, y, sheet.width - 1, y + c.height + pad - 1), outline=(200, 0, 0), width=2)
+            d.text((6, y + 6), str(n), fill=(200, 0, 0), font=font)
+            sheet.paste(c.convert("RGB"), (label, y + pad // 2))
+            y += c.height + pad
+        out.append((g, sheet))
+    return out
+
+
+def groq(crops):
+    """
+    Hosted OCR through Groq's API (needs a key; images leave this machine). Every
+    image costs a flat ~800 input tokens against a free-tier budget of a few
+    thousand per minute, so crops are tiled into numbered sheets and read in one
+    request per sheet; a sheet whose answer can't be parsed falls back to one
+    request per crop.
+    """
+    import json
+
+    if not config.groq_key():
+        raise RuntimeError(f"No Groq key: set GROQ_API_KEY or put it in {config.GROQ_KEY_FILE}")
+    print(f"  [groq] model {groq_model()}")
+    out = [""] * len(crops)
+    for idx, sheet in _sheets(crops):
+        prompt = (f"This image is a stack of {len(idx)} boxes, numbered in red on the left, each cut from a comic. "
+                  "For each box, transcribe its lettering all lowercase unless a word is a proper name or place; "
+                  "use an empty string if a box has no real text. "
+                  "Reply with only a JSON object mapping each box number to its text.")
+        try:
+            answer = json.loads(_groq_request(
+                [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": _data_url(sheet)}}],
+                max_tokens=150 * len(idx) + 100, json_mode=True))
+            for n, i in enumerate(idx, 1):
+                out[i] = _clean(str(answer.get(str(n), "")))
+        except (ValueError, AttributeError) as e:
+            print(f"  [groq] couldn't use the sheet's answer ({e}); reading one by one")
+            for i in idx:
+                out[i] = _clean(_groq_request([
+                    {"type": "text", "text": config.OCR_PROMPT + " Reply with the text only."},
+                    {"type": "image_url", "image_url": {"url": _data_url(crops[i])}}], max_tokens=200))
     return out
 
 

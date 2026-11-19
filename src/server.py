@@ -119,7 +119,7 @@ def warm_up():
 def info():
     ocr_name = {"qwen": config.QWEN_ID, "florence": config.FLORENCE_ID, "moondream": config.MOONDREAM_ID}.get(
         OCR_BACKEND, f"Groq {config.GROQ_MODEL or '(auto model)'}")
-    return {**status, "device": config.DEVICE, "ocr": ocr_name, "dictionary": config.DICTIONARY,
+    return {**status, "device": config.DEVICE, "ocr": ocr_name, "ocr_batch": OCR_BACKEND == "groq", "dictionary": config.DICTIONARY,
             "font": config.FONT, "fonts": sorted(p.name for p in config.FONT_DIR.glob("*.otf"))}
 
 

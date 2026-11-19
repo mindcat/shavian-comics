@@ -8,7 +8,7 @@ transliterated and typeset (auto eraser, matched size) so they can be judged
 side by side. Backends that aren't available (e.g. Groq without a key) are
 listed in the report with the reason.
 
-    uv run python src/compare.py [--ocr qwen,florence,groq] [--detector ctd] [--cpu-bench] [image ...]
+    uv run python src/compare.py [--ocr qwen,florence[,groq]] [--detector ctd] [--cpu-bench] [image ...]
 """
 import argparse
 import html
@@ -64,7 +64,7 @@ def cpu_bench(images, det, n=6):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("images", nargs="*", type=Path)
-    ap.add_argument("--ocr", default="qwen,florence,groq")
+    ap.add_argument("--ocr", default="qwen,florence", help="comma-separated; add groq explicitly (uses the free API quota)")
     ap.add_argument("--detector", default="ctd", choices=list(pipeline.DETECTORS))
     ap.add_argument("--cpu-bench", action="store_true", help="also time Florence-2 on 2 CPU threads")
     args = ap.parse_args()

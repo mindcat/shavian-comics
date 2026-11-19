@@ -32,6 +32,7 @@ async function pollStatus() {
   const el = $("#status");
   try {
     const info = await json("/api/info");
+    state.info = info;
     if (info.ready) {
       el.textContent = `ready · ${info.device} · OCR ${info.ocr.split("/").pop()} · ${info.dictionary} dictionary`;
       el.className = "status ready";
@@ -84,12 +85,18 @@ async function upload(file) {
   step("detect", "done");
   drawAll();
 
-  // Read the enabled regions one by one so the cards fill in as we go
+  // Read the enabled regions one by one so the cards fill in as we go (or all at
+  // once, for backends that are faster that way, like the Groq API)
   step("read", "doing");
   const todo = [...state.regions.values()].filter(r => r.enabled);
-  for (let i = 0; i < todo.length; i++) {
-    busy(`reading ${i + 1} / ${todo.length}…`);
-    await readRegion(todo[i].id);
+  if (state.info && state.info.ocr_batch) {
+    busy(`reading ${todo.length} regions…`);
+    (await json(`/api/jobs/${state.job.id}/ocr`, "POST", { ids: todo.map(r => r.id) })).forEach(update);
+  } else {
+    for (let i = 0; i < todo.length; i++) {
+      busy(`reading ${i + 1} / ${todo.length}…`);
+      await readRegion(todo[i].id);
+    }
   }
   step("read", "done");
   await rerender();
