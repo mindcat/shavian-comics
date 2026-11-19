@@ -43,3 +43,6 @@ __pycache__/
 /src/img/out/
 /src/img/tmp/
 /temp/
+
+# Assembled Hugging Face Space
+/deploy/space-build/

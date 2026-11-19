@@ -1,0 +1,17 @@
+# CPU-only dependencies for the Hugging Face Space (installed with the PyTorch CPU index).
+# Versions match uv.lock; ultralytics/YOLO and the GPU OCR models aren't needed here.
+torch==2.11.0
+transformers==4.57.6
+numpy==2.5.4
+pillow==13.0.0
+scipy==1.18.1
+opencv-python-headless==5.0.0.93
+onnxruntime==1.31.1
+spacy==3.8.18
+en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+fastapi==0.162.4
+uvicorn==0.54.0
+python-multipart==0.0.33
+requests==2.34.2
+tqdm==4.70.1
+huggingface-hub==0.36.2

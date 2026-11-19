@@ -258,8 +258,8 @@ def download_file(url, file_path, description, should_extract=False, extract_to=
         print(f"✗ Unexpected error: {e}")
         return False
 
-def main():
-    """Main function to download all files."""
+def main(skip=()):
+    """Main function to download all files (except those whose file name is in `skip`)."""
     # All paths in DOWNLOADS are relative to this script's directory
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
     print("▸ File Downloader Started")
@@ -273,6 +273,9 @@ def main():
     failed = 0
 
     for url, config in DOWNLOADS.items():
+        if os.path.basename(config["path"]) in skip:
+            print(f"▷ Skipping {config['path']} (--skip)")
+            continue
         file_path = config["path"]
         description = config["description"]
         should_extract = config.get("extract", False)
@@ -318,8 +321,12 @@ def main():
         print("▲ Some downloads failed. Check the errors above.")
 
 if __name__ == "__main__":
+    import argparse
+
+    ap = argparse.ArgumentParser(description="Download models, dictionaries and fonts")
+    ap.add_argument("--skip", nargs="*", default=[], help="file names to leave out, e.g. model.pt")
     try:
-        main()
+        main(skip=ap.parse_args().skip)
     except KeyboardInterrupt:
         print("\n\n◾ Download interrupted by user")
         sys.exit(1)

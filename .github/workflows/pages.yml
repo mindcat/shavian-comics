@@ -1,0 +1,44 @@
+# Publishes the web tool's front end (src/web/) to GitHub Pages, pointed at the
+# API on the Hugging Face Space. Set the Space's URL as the repository variable
+# SHAVIAN_API (Settings > Secrets and variables > Actions > Variables), and set
+# Settings > Pages > Source to "GitHub Actions".
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths: ["src/web/**", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assemble site
+        env:
+          SHAVIAN_API: ${{ vars.SHAVIAN_API }}
+        run: |
+          mkdir -p _site/web
+          cp src/web/index.html _site/
+          cp src/web/*.js src/web/*.css _site/web/
+          printf 'window.SHAVIAN_API = window.SHAVIAN_API || %s;\n' "\"${SHAVIAN_API}\"" > _site/web/config.js
+          cat _site/web/config.js
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4

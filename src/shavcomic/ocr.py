@@ -68,17 +68,23 @@ def qwen(crops):
 
 
 def florence(crops):
-    """Florence-2 '<OCR>': reads lettering exactly as written (capitals, line breaks),
-    so lines are joined and the text re-cased with the Shavian dictionary's help."""
+    """
+    Florence-2 '<OCR_WITH_REGION>': reads each line of lettering separately, exactly
+    as written (capitals). Lines are then joined and the text re-cased with the
+    Shavian dictionary's help. (Plain '<OCR>' sometimes drops the line breaks,
+    gluing words together: "80%WATER".)
+    """
     model, processor = models.florence()
+    task = "<OCR_WITH_REGION>"
     out = []
     for c in crops:
-        inputs = processor(text="<OCR>", images=c, return_tensors="pt").to(model.device, model.dtype)
+        inputs = processor(text=task, images=c, return_tensors="pt").to(model.device, model.dtype)
         with torch.inference_mode():
-            ids = model.generate(**inputs, max_new_tokens=200, num_beams=3, do_sample=False)
+            ids = model.generate(**inputs, max_new_tokens=200, num_beams=config.FLORENCE_BEAMS, do_sample=False)
         raw = processor.batch_decode(ids, skip_special_tokens=False)[0]
-        text = processor.post_process_generation(raw, task="<OCR>", image_size=c.size)["<OCR>"]
-        out.append(_clean(translit.recase(join_lines(text))))
+        lines = processor.post_process_generation(raw, task=task, image_size=c.size)[task]["labels"]
+        lines = [l.replace("</s>", "").replace("<s>", "").strip() for l in lines]
+        out.append(_clean(translit.recase(join_lines("\n".join(l for l in lines if l)))))
     return out
 
 

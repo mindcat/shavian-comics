@@ -20,6 +20,7 @@ MOONDREAM_ID = "vikhyatk/moondream2"
 MOONDREAM_REVISION = "2025-06-21"
 QWEN_ID = os.environ.get("SHAVIAN_QWEN", "Qwen/Qwen3-VL-2B-Instruct")
 FLORENCE_ID = os.environ.get("SHAVIAN_FLORENCE", "florence-community/Florence-2-large")
+FLORENCE_BEAMS = int(os.environ.get("SHAVIAN_FLORENCE_BEAMS", 3))
 
 # Groq (optional hosted OCR; off unless a key is configured). The key is read from
 # GROQ_API_KEY or ~/.config/shavian-comics/groq_api_key, never from the repo.

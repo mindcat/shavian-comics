@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 import uvicorn  # noqa: E402
-from fastapi import FastAPI, File, HTTPException, UploadFile  # noqa: E402
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import FileResponse, RedirectResponse, Response  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
@@ -35,11 +35,18 @@ from shavcomic import config, detect_ctd, layout, models, ocr, pipeline, transli
 WEB_DIR = Path(__file__).resolve().parent / "web"
 REPORT_DIR = config.OUTPUT_DIR / "compare"
 OCR_BACKEND = os.environ.get("SHAVIAN_OCR", "qwen")  # qwen (GPU) | florence (CPU-friendly) | groq (hosted API)
-MAX_JOBS = 20
-MAX_SIDE = 2400  # downscale bigger uploads
+# Limits, configurable for public hosting (see deploy/space/)
+MAX_JOBS = int(os.environ.get("SHAVIAN_MAX_JOBS", 20))        # jobs kept in memory
+MAX_SIDE = int(os.environ.get("SHAVIAN_MAX_SIDE", 2400))      # downscale bigger uploads
+MAX_UPLOAD_MB = float(os.environ.get("SHAVIAN_MAX_UPLOAD_MB", 15))
+UPLOADS_PER_HOUR = int(os.environ.get("SHAVIAN_UPLOADS_PER_HOUR", 0))  # per client IP; 0 = unlimited
+ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("SHAVIAN_ALLOWED_ORIGINS", "*").split(",") if o.strip()]
+OCR_FALLBACK = os.environ.get("SHAVIAN_OCR_FALLBACK", "")  # used if the main backend fails (e.g. Groq quota)
 
 app = FastAPI(title="Shavian comics")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_methods=["*"], allow_headers=["*"],
+                   expose_headers=["X-Font-Sizes"])
+uploads = {}  # client IP -> recent upload times
 
 gpu = threading.Lock()   # one model call at a time
 jobs = OrderedDict()     # job id -> Job
@@ -101,8 +108,11 @@ def warm_up():
     try:
         ocr_loader = {"qwen": models.qwen, "florence": models.florence, "moondream": models.moondream}.get(
             OCR_BACKEND, lambda: ocr.groq_model() if config.groq_key() else None)
-        for name, fn in (("comic-text-detector", models.ctd), ("shaw.py + spaCy", translit.engine),
-                         (f"{OCR_BACKEND} OCR", ocr_loader), ("LaMa", models.lama)):
+        steps = [("comic-text-detector", models.ctd), ("shaw.py + spaCy", translit.engine),
+                 (f"{OCR_BACKEND} OCR", ocr_loader), ("LaMa", models.lama)]
+        if OCR_FALLBACK in ("florence", "qwen", "moondream"):
+            steps.append((f"{OCR_FALLBACK} OCR (fallback)", getattr(models, OCR_FALLBACK)))
+        for name, fn in steps:
             status["loading"] = name
             with gpu:
                 fn()
@@ -119,15 +129,39 @@ def warm_up():
 def info():
     ocr_name = {"qwen": config.QWEN_ID, "florence": config.FLORENCE_ID, "moondream": config.MOONDREAM_ID}.get(
         OCR_BACKEND, f"Groq {config.GROQ_MODEL or '(auto model)'}")
-    return {**status, "device": config.DEVICE, "ocr": ocr_name, "ocr_batch": OCR_BACKEND == "groq", "dictionary": config.DICTIONARY,
+    return {**status, "device": config.DEVICE, "ocr": ocr_name, "ocr_batch": OCR_BACKEND == "groq",
+            "ocr_fallback": OCR_FALLBACK or None, "max_upload_mb": MAX_UPLOAD_MB, "dictionary": config.DICTIONARY,
             "font": config.FONT, "fonts": sorted(p.name for p in config.FONT_DIR.glob("*.otf"))}
 
 
+def client_ip(request):
+    # Behind a proxy (e.g. Hugging Face Spaces) the first X-Forwarded-For entry is the client
+    fwd = request.headers.get("x-forwarded-for", "")
+    return fwd.split(",")[0].strip() or (request.client.host if request.client else "?")
+
+
+def check_rate(request):
+    if not UPLOADS_PER_HOUR:
+        return
+    now, ip = time.time(), client_ip(request)
+    recent = [t for t in uploads.get(ip, []) if now - t < 3600]
+    if len(recent) >= UPLOADS_PER_HOUR:
+        raise HTTPException(429, f"Limit of {UPLOADS_PER_HOUR} comics an hour reached; try again later")
+    uploads[ip] = recent + [now]
+    if len(uploads) > 10000:  # forget idle clients
+        for k in [k for k, v in uploads.items() if now - v[-1] > 3600]:
+            del uploads[k]
+
+
 @app.post("/api/jobs")
-async def create_job(file: UploadFile = File(...)):
+async def create_job(request: Request, file: UploadFile = File(...)):
     """Upload an image and detect its text. OCR happens separately, region by region."""
+    check_rate(request)
+    data = await file.read(int(MAX_UPLOAD_MB * 1024 * 1024) + 1)
+    if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
+        raise HTTPException(413, f"Images up to {MAX_UPLOAD_MB:g} MB, please")
     try:
-        image = Image.open(io.BytesIO(await file.read()))
+        image = Image.open(io.BytesIO(data))
         image = ImageOps.exif_transpose(image).convert("RGBA")
     except Exception:
         raise HTTPException(400, "That doesn't look like an image")
@@ -167,8 +201,15 @@ def read_regions(job_id: str, body: Ids):
     """OCR + transliterate the given regions. Returns them."""
     job = get_job(job_id)
     regs = [job.regions[i] for i in body.ids if i in job.regions]
+    crops = [ocr.crop_for_ocr(job.image, r) for r in regs]
     with gpu:
-        texts = ocr.BACKENDS[OCR_BACKEND]([ocr.crop_for_ocr(job.image, r) for r in regs])
+        try:
+            texts = ocr.BACKENDS[OCR_BACKEND](crops)
+        except Exception as e:
+            if not OCR_FALLBACK:
+                raise
+            print(f"[server] {OCR_BACKEND} OCR failed ({e!r}); using {OCR_FALLBACK}")
+            texts = ocr.BACKENDS[OCR_FALLBACK](crops)
     for r, t in zip(regs, texts):
         r.ocr[OCR_BACKEND] = t
     for r, s in zip(regs, translit.transliterate(texts)):
@@ -257,8 +298,7 @@ def render(job_id: str, stage: str = "final"):
     buf = io.BytesIO()
     out.convert("RGB").save(buf, "PNG", compress_level=1)
     return Response(buf.getvalue(), media_type="image/png",
-                    headers={"Cache-Control": "no-store", "X-Font-Sizes": sizes,
-                             "Access-Control-Expose-Headers": "X-Font-Sizes"})
+                    headers={"Cache-Control": "no-store", "X-Font-Sizes": sizes})
 
 
 @app.get("/fonts/{name}")
@@ -286,8 +326,8 @@ if REPORT_DIR.exists():
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--host", default=os.environ.get("SHAVIAN_HOST", "127.0.0.1"))
+    ap.add_argument("--port", type=int, default=int(os.environ.get("SHAVIAN_PORT", 8765)))
     args = ap.parse_args()
     threading.Thread(target=warm_up, daemon=True).start()
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
