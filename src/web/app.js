@@ -35,6 +35,7 @@ async function pollStatus() {
     state.info = info;
     if (info.ready) {
       el.textContent = `ready · ${info.device} · OCR ${info.ocr.split("/").pop()} · ${info.dictionary} dictionary`;
+      showAllowance(info.uploads_left, info.uploads_per_day);
       el.className = "status ready";
       return;
     }
@@ -55,9 +56,23 @@ function busy(text) {
   el.textContent = text || "";
 }
 
+// ------------------------------------------------------------------ daily allowance
+function showAllowance(left, perDay) {
+  const el = $("#allowance");
+  if (left == null || !perDay) { el.hidden = true; return; }
+  state.left = left;
+  el.hidden = false;
+  el.textContent = left > 0 ? `${left} of ${perDay} pages left today` : `You've used today's ${perDay} pages; come back tomorrow`;
+  el.classList.toggle("none-left", left === 0);
+}
+
 // ------------------------------------------------------------------ upload
 async function upload(file) {
   if (!file || !file.type.startsWith("image/")) return;
+  if (state.left === 0) {
+    alert("You've used today's pages; please come back tomorrow.");
+    return;
+  }
   $("#drop").hidden = true;
   $("#work").hidden = false;
   ["detect", "read", "render"].forEach(s => step(s));
@@ -81,6 +96,7 @@ async function upload(file) {
     return reset();
   }
   state.urls.original = `${API}/api/jobs/${state.job.id}/original.png`;
+  if (state.info) showAllowance(state.job.uploads_left, state.info.uploads_per_day);
   state.job.regions.forEach(r => state.regions.set(r.id, r));
   step("detect", "done");
   drawAll();

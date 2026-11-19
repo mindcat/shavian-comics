@@ -40,6 +40,7 @@ MAX_JOBS = int(os.environ.get("SHAVIAN_MAX_JOBS", 20))        # jobs kept in mem
 MAX_SIDE = int(os.environ.get("SHAVIAN_MAX_SIDE", 2400))      # downscale bigger uploads
 MAX_UPLOAD_MB = float(os.environ.get("SHAVIAN_MAX_UPLOAD_MB", 15))
 UPLOADS_PER_HOUR = int(os.environ.get("SHAVIAN_UPLOADS_PER_HOUR", 0))  # per client IP; 0 = unlimited
+UPLOADS_PER_DAY = int(os.environ.get("SHAVIAN_UPLOADS_PER_DAY", 0))    # per client IP; 0 = unlimited
 ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("SHAVIAN_ALLOWED_ORIGINS", "*").split(",") if o.strip()]
 OCR_FALLBACK = os.environ.get("SHAVIAN_OCR_FALLBACK", "")  # used if the main backend fails (e.g. Groq quota)
 
@@ -126,11 +127,12 @@ def warm_up():
 # ---------------------------------------------------------------- API
 
 @app.get("/api/info")
-def info():
+def info(request: Request):
     ocr_name = {"qwen": config.QWEN_ID, "florence": config.FLORENCE_ID, "moondream": config.MOONDREAM_ID}.get(
         OCR_BACKEND, f"Groq {config.GROQ_MODEL or '(auto model)'}")
     return {**status, "device": config.DEVICE, "ocr": ocr_name, "ocr_batch": OCR_BACKEND == "groq",
-            "ocr_fallback": OCR_FALLBACK or None, "max_upload_mb": MAX_UPLOAD_MB, "dictionary": config.DICTIONARY,
+            "ocr_fallback": OCR_FALLBACK or None, "max_upload_mb": MAX_UPLOAD_MB,
+            "uploads_per_day": UPLOADS_PER_DAY or None, "uploads_left": uploads_left(request), "dictionary": config.DICTIONARY,
             "font": config.FONT, "fonts": sorted(p.name for p in config.FONT_DIR.glob("*.otf"))}
 
 
@@ -140,16 +142,31 @@ def client_ip(request):
     return fwd.split(",")[0].strip() or (request.client.host if request.client else "?")
 
 
+def _recent(ip, now):
+    return [t for t in uploads.get(ip, []) if now - t < 86400]
+
+
+def uploads_left(request):
+    """Pages this visitor may still upload today (None = no daily limit)."""
+    if not UPLOADS_PER_DAY:
+        return None
+    return max(0, UPLOADS_PER_DAY - len(_recent(client_ip(request), time.time())))
+
+
 def check_rate(request):
-    if not UPLOADS_PER_HOUR:
+    """Per-visitor limits (by IP); counted on upload, one page = one upload."""
+    if not (UPLOADS_PER_HOUR or UPLOADS_PER_DAY):
         return
     now, ip = time.time(), client_ip(request)
-    recent = [t for t in uploads.get(ip, []) if now - t < 3600]
-    if len(recent) >= UPLOADS_PER_HOUR:
-        raise HTTPException(429, f"Limit of {UPLOADS_PER_HOUR} comics an hour reached; try again later")
+    recent = _recent(ip, now)
+    if UPLOADS_PER_DAY and len(recent) >= UPLOADS_PER_DAY:
+        reset = time.strftime("%H:%M UTC", time.gmtime(recent[0] + 86400))
+        raise HTTPException(429, f"That's today's limit of {UPLOADS_PER_DAY} pages; more from {reset}")
+    if UPLOADS_PER_HOUR and len([t for t in recent if now - t < 3600]) >= UPLOADS_PER_HOUR:
+        raise HTTPException(429, f"Limit of {UPLOADS_PER_HOUR} pages an hour reached; try again in a bit")
     uploads[ip] = recent + [now]
-    if len(uploads) > 10000:  # forget idle clients
-        for k in [k for k, v in uploads.items() if now - v[-1] > 3600]:
+    if len(uploads) > 10000:  # forget idle visitors
+        for k in [k for k, v in uploads.items() if not _recent(k, now)]:
             del uploads[k]
 
 
@@ -177,7 +194,7 @@ async def create_job(request: Request, file: UploadFile = File(...)):
     jobs[job.id] = job
     while len(jobs) > MAX_JOBS:
         jobs.popitem(last=False)
-    return job_json(job)
+    return {**job_json(job), "uploads_left": uploads_left(request)}
 
 
 @app.get("/api/jobs/{job_id}")

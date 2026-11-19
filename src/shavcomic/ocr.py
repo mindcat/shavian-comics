@@ -148,6 +148,8 @@ def _groq_request(content, max_tokens, json_mode=False):
                           headers={"Authorization": f"Bearer {config.groq_key()}"})
         if r.status_code == 429:  # free-tier rate limit: wait as told, then retry
             wait = float(r.headers.get("retry-after", 2 ** attempt))
+            if wait > 60:  # e.g. the daily quota: give up so the caller can fall back
+                raise RuntimeError(f"Groq rate limit, retry in {wait:.0f}s")
             print(f"  [groq] rate limited, waiting {wait:.0f}s")
             time.sleep(wait)
             continue
