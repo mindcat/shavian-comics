@@ -66,7 +66,7 @@ def _fits(draw, f, lines, center, fit_mask):
     return True
 
 
-def fit_text(draw, text, area, max_size=None):
+def fit_text(draw, text, area, max_size=None, prefer_wide=False):
     """
     Largest font size <= max_size (and its wrapping) at which the text fits inside
     `area`. Returns (font, lines, center) or None.
@@ -91,7 +91,9 @@ def fit_text(draw, text, area, max_size=None):
 
     def try_size(size):
         f = font(size)
-        for frac in np.linspace(0.35, 1.0, 14):
+        # Narrow first suits round bubbles; wide first keeps labels and captions on their lines
+        fracs = np.linspace(0.35, 1.0, 14)
+        for frac in (fracs[::-1] if prefer_wide else fracs):
             lines = wrap_words(words, f, max_width * frac, draw)
             if lines:
                 for c in centers:
@@ -137,7 +139,7 @@ def draw_text(image, region, text, size_mode="match"):
         max_size = None
         if size_mode == "match" and region.letter_height:
             max_size = size_for_letter_height(region.letter_height)
-        fitted = fit_text(draw, text, region.layout_mask, max_size)
+        fitted = fit_text(draw, text, region.layout_mask, max_size, prefer_wide=region.kind == "free")
         if fitted is None:
             f, lines, center = forced_layout(draw, text, region.layout_mask, MIN_FONT_SIZE)
             note = "didn't fit"

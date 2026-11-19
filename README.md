@@ -11,6 +11,7 @@ uv run python src/init.py                # download the speech-bubble model, dic
 uv run python src/shavian-comics.py      # convert everything in src/img/in/ into src/img/out/
 uv run python src/compare.py             # run every backend side by side -> src/img/out/compare/index.html
 uv run python src/server.py              # web tool at http://127.0.0.1:8765 (add --host to share it)
+uv run python tools/regress.py [REF]     # what did my change do to the test strips? (vs REF, default HEAD)
 ```
 
 The web tool lets you drop in a comic, then check and correct every stage: switch regions on or off (sound effects and logos are found but off by default), fix the English (re-transliterated as you go) or the Shavian directly, draw a box around text that was missed, pick the eraser and font size per region, and download the result. The page in `src/web/` only talks to the server's `/api/`, so it can be hosted separately and pointed at a server with `?api=https://your-server`.

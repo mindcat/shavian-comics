@@ -15,7 +15,7 @@ import numpy as np
 from scipy import ndimage
 
 from . import models
-from .regions import Region, colour_region, dominant_colour, letter_height, rect_mask
+from .regions import Region, colour_region, dominant_colour, ink_mask, letter_height, rect_mask
 
 INPUT_SIZE = 1024
 SEG_THRESHOLD = 0.4
@@ -26,6 +26,7 @@ BUBBLE_SEARCH = 10   # look for a bubble's edge within this many line-heights
 MAX_BUBBLE_AREA = 15 # a bubble is at most this many times its text's box area
 MAX_NONTEXT_HOLES = 0.04  # a bubble encloses (almost) nothing but its text
 MIN_SOLIDITY = 0.75  # bubbles are roughly convex (area / convex hull area); a panel background with a figure cut out isn't
+STRONG_INK = 110      # "drawing" for free text = strongly contrasting pixels (noisy scans have colour banding)
 MAX_HOLE_HEIGHT = 3.0  # nothing but lettering inside a bubble: no enclosed non-text shape taller than this many line heights
 SNUG_MARGIN = 2.0      # a bubble hugs its text: beyond this many line heights around the text...
 MAX_OUTSIDE = 0.4      # ...there's at most this fraction of the bubble (its tail); a whole panel has much more
@@ -184,9 +185,27 @@ def free_region(image_rgb, ink, lines, note=""):
     text = ink & np.logical_or.reduce([rect_mask(shape, l, pad=2) for l in lines])
     around = rect_mask(shape, box, pad=int(0.5 * lh)) & ~ndimage.binary_dilation(text, iterations=2)
     bg = dominant_colour(image_rgb[around]) if around.any() else (255, 255, 255)
+    # The text detector sometimes counts a bit of adjacent drawing as lettering (an axis
+    # line a label sits against, a panel border). Straight runs of ink much longer than a
+    # letter is tall are rules, not lettering, so keep them out of what gets erased.
+    run = max(5, int(1.6 * lh))
+    drawn = ink_mask(image_rgb, rect_mask(shape, box, pad=int(lh)), bg, tol=STRONG_INK)
+    rules = ndimage.binary_opening(drawn, structure=np.ones((run, 1))) | ndimage.binary_opening(drawn, structure=np.ones((1, run)))
+    art = ndimage.binary_dilation(rules, iterations=1)
+    text = text & ~art
+
+    # Room for the new text: the text's box, padded, minus any other drawing in it
+    # (an axis line, a character), so the Shavian isn't set on top of the art
+    room = rect_mask(shape, box, pad=int(0.3 * lh))
+    art = ink_mask(image_rgb, room, bg, tol=STRONG_INK) & ~ndimage.binary_dilation(text, iterations=3)
+    art = ndimage.binary_dilation(art, iterations=2)
+    layout = room & ~art
+    if layout.sum() < 0.6 * room.sum():  # text over busy artwork: don't let the art squeeze it out
+        layout = room
     return Region(
-        kind="free", box=box, layout_mask=rect_mask(shape, box, pad=int(0.3 * lh)),
-        erase_mask=ndimage.binary_dilation(text, iterations=3), text_mask=text, bg=bg,
+        kind="free", box=box, layout_mask=layout,
+        erase_mask=ndimage.binary_dilation(text, iterations=3) & ~art,
+        text_mask=text, bg=bg,
         letter_height=lh, note=note or f"{len(lines)} free line(s)",
     )
 

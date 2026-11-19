@@ -9,10 +9,24 @@ from . import config, models
 from .regions import mask_bbox
 
 
+def _exact_bg(image, region):
+    """
+    The real background colour around the text. region.bg comes from coarse colour
+    bins (good for finding the bubble, but a few levels off: 252 instead of 255),
+    so average the actual nearby pixels that match it.
+    """
+    near = ndimage.binary_dilation(region.erase_mask, iterations=6) & ~region.erase_mask & ~region.text_mask
+    px = np.array(image.convert("RGB"))[near].astype(np.int16)
+    if not len(px):
+        return region.bg
+    px = px[np.abs(px - np.array(region.bg, dtype=np.int16)).max(axis=1) <= 12]
+    return tuple(int(round(v)) for v in px.mean(axis=0)) if len(px) else region.bg
+
+
 def fill(image, region):
     """Paint the region's erase mask in its background colour (perfect for flat bubbles)."""
     m = Image.fromarray(region.erase_mask.astype(np.uint8) * 255).filter(ImageFilter.GaussianBlur(0.7))
-    image.paste(Image.new(image.mode, image.size, (*region.bg, 255)[: len(image.mode)]), (0, 0), m)
+    image.paste(Image.new(image.mode, image.size, (*_exact_bg(image, region), 255)[: len(image.mode)]), (0, 0), m)
 
 
 def _inpaint_mask(region):
@@ -59,9 +73,19 @@ def _paste(image, rgb, mask, box):
     image.paste(patch, box[:2], m)
 
 
+def _flat_background(image, region):
+    """True if the pixels just around the text are (almost) all the background colour."""
+    ring = ndimage.binary_dilation(region.erase_mask, iterations=4) & ~region.erase_mask
+    if not ring.any():
+        return False
+    px = np.array(image.convert("RGB"))[ring].astype(np.int16)
+    off = np.abs(px - np.array(_exact_bg(image, region), dtype=np.int16)).max(axis=1) > 24
+    return off.mean() < 0.10  # a few nearby lines (axis ticks) are fine: fill only paints the text itself
+
+
 def auto(image, region):
-    """Flat fill inside bubbles (exact), LaMa for text over artwork or panel backgrounds."""
-    (fill if region.kind == "bubble" else lama)(image, region)
+    """Flat fill inside bubbles and on flat backgrounds (exact); LaMa over artwork and gradients."""
+    (fill if region.kind == "bubble" or _flat_background(image, region) else lama)(image, region)
 
 
 BACKENDS = {"auto": auto, "fill": fill, "telea": telea, "lama": lama}
