@@ -26,6 +26,9 @@ BUBBLE_SEARCH = 10   # look for a bubble's edge within this many line-heights
 MAX_BUBBLE_AREA = 15 # a bubble is at most this many times its text's box area
 MAX_NONTEXT_HOLES = 0.04  # a bubble encloses (almost) nothing but its text
 MIN_SOLIDITY = 0.75  # bubbles are roughly convex (area / convex hull area); a panel background with a figure cut out isn't
+MAX_HOLE_HEIGHT = 3.0  # nothing but lettering inside a bubble: no enclosed non-text shape taller than this many line heights
+SNUG_MARGIN = 2.0      # a bubble hugs its text: beyond this many line heights around the text...
+MAX_OUTSIDE = 0.4      # ...there's at most this fraction of the bubble (its tail); a whole panel has much more
 
 
 def run_ctd(image_rgb):
@@ -147,10 +150,22 @@ def find_bubble(image_rgb, box, ink_wide, typical):
         return None
     filled, raw, bg, enclosed = found
     holes = filled & ~raw & ~ink_wide
-    if enclosed and (filled & seed).sum() >= 0.9 * seed.sum() and holes.sum() <= MAX_NONTEXT_HOLES * filled.sum() \
-            and solidity(filled) >= MIN_SOLIDITY:
-        return filled, bg
-    return None
+    if not (enclosed and (filled & seed).sum() >= 0.9 * seed.sum() and holes.sum() <= MAX_NONTEXT_HOLES * filled.sum()
+            and solidity(filled) >= MIN_SOLIDITY):
+        return None
+    # Something tall enclosed with the text (a stick figure on a plain panel) means this
+    # is a panel background, not a speech bubble
+    labels, n = ndimage.label(holes)
+    if n and max(sl[0].stop - sl[0].start for sl in ndimage.find_objects(labels)) > MAX_HOLE_HEIGHT * lh:
+        return None
+    return filled, bg
+
+
+def hugs_text(interior, lines):
+    """A speech bubble hugs its text; apart from its tail, little of it is far from the text."""
+    lh = float(np.median([l[3] - l[1] for l in lines]))
+    near = rect_mask(interior.shape, union_box(lines), pad=int(SNUG_MARGIN * lh))
+    return (interior & ~near).sum() <= MAX_OUTSIDE * interior.sum()
 
 
 def bubble_region(ink, interior, bg, lines, note=""):
@@ -256,7 +271,7 @@ def detect(image, ctx=None):
     regions = []
     for interior, bg, group in bubble_groups:
         box = union_box(group)
-        if interior.sum() > MAX_BUBBLE_AREA * (box[2] - box[0]) * (box[3] - box[1]):
+        if interior.sum() > MAX_BUBBLE_AREA * (box[2] - box[0]) * (box[3] - box[1]) or not hugs_text(interior, group):
             free_lines.extend(group)  # too roomy to be this text's bubble (e.g. a whole plain panel)
             continue
         regions.append(bubble_region(ink, interior, bg, group))
