@@ -12,7 +12,8 @@ const FLORENCE_ID = "onnx-community/Florence-2-base-ft";
 const CTD_SIZE = 1024;
 
 let assets = null;       // {ctd, dict, shaw, textproc, nltk: {weights, tagdict, classes}}
-let lowMemory = false;   // phones/tablets: CPU only, and models are released between comics
+let lowMemory = false;   // phones/tablets: CPU only
+let smallOcr = false;    // 4-bit Florence-2 (about a quarter smaller) for low-memory devices
 let ctdSession = null, florence = null, py = null;
 const loading = {};
 
@@ -93,12 +94,14 @@ async function loadFlorence() {
       files[p.file] = [p.loaded || 0, p.total || 0];
       const loaded = Object.values(files).reduce((a, v) => a + v[0], 0);
       const total = Object.values(files).reduce((a, v) => a + v[1], 0);
-      progress("OCR model (~270 MB, first time only)", loaded, total);
+      progress(`OCR model (~${smallOcr ? 210 : 270} MB, first time only)`, loaded, total);
     }
   };
   const device = (await hasWebGPU()) ? "webgpu" : "wasm";
   const model = await tf.Florence2ForConditionalGeneration.from_pretrained(FLORENCE_ID, {
-    dtype: "q8", device, progress_callback: onProgress });
+    // q8 = the *_quantized.onnx files; the smaller option uses 4-bit weights where they're smaller
+    dtype: smallOcr ? { embed_tokens: "q8", vision_encoder: "q4", encoder_model: "q4", decoder_model_merged: "q4" } : "q8",
+    device, progress_callback: onProgress });
   const processor = await tf.AutoProcessor.from_pretrained(FLORENCE_ID);
   const tokenizer = await tf.AutoTokenizer.from_pretrained(FLORENCE_ID);
   florence = { tf, model, processor, tokenizer, device };
@@ -109,7 +112,8 @@ async function runFlorence({ crops }) {
   const f = florence || await (loading.florence ||= loadFlorence());
   const task = "<OCR_WITH_REGION>";
   const out = [];
-  for (const c of crops) {
+  for (const [k, c] of crops.entries()) {
+    if (crops.length > 1) progress(`reading text ${k + 1} / ${crops.length}`, 0, 0);
     const image = new f.tf.RawImage(c.data, c.w, c.h, 3);
     const prompts = f.processor.construct_prompts(task);
     const textInputs = f.tokenizer(prompts);
@@ -169,7 +173,7 @@ async function release({ ctd = false, ocr = false, python = false }) {
 }
 
 const ops = {
-  init: async ({ urls, lowMem }) => { assets = urls; lowMemory = !!lowMem; return true; },
+  init: async ({ urls, lowMem, smallOcr: small }) => { assets = urls; lowMemory = !!lowMem; smallOcr = !!small; return true; },
   release,
   ctd: runCtd,
   florence: runFlorence,

@@ -38,10 +38,16 @@ function crashNote() {
   if (!c || Date.now() - c.at > 15 * 60 * 1000) return;
   const el = $("#crash-note");
   el.hidden = false;
+  let next = "Try a smaller image, close other tabs, or switch “Read text with” to Groq (it needs far less memory).";
+  // Died loading or running the OCR model: switch to the smaller one for the next try
+  const current = localStorage.getItem("shavian-local-ocr") || "florence";
+  if (/OCR model|reading the text/.test(c.step) && current === "florence") {
+    localStorage.setItem("shavian-local-ocr", "florence-small");
+    next = "The next try will use the smaller reading model (switched under “Read text with”). " +
+      "If that fails too, Groq needs far less memory.";
+  }
   el.innerHTML = `<b>The last comic didn't finish:</b> the page reloaded while <i>${c.step}</i>. ` +
-    "That usually means the browser closed the page for using too much memory. " +
-    "Try a smaller image, close other tabs, or switch “Read text with” to Groq (it needs far less memory). " +
-    "If it keeps happening, please note the step above.";
+    `That usually means the browser closed the page for using too much memory. ${next}`;
 }
 async function local() {
   if (!localBackend) {
@@ -480,6 +486,7 @@ function setupMode() {
   $("#groq-row").hidden = ocrSel.value !== "groq";
   ocrSel.addEventListener("change", () => {
     localStorage.setItem("shavian-local-ocr", ocrSel.value);
+    if (localBackend) localBackend.terminate("ocr");  // reload with the chosen model
     $("#groq-row").hidden = ocrSel.value !== "groq";
     pollStatus();
   });
@@ -509,7 +516,7 @@ function setup() {
   $("#download").addEventListener("click", download);
   $("#overlay").addEventListener("click", () => { if (!state.drawing) select(null); });
   setupDrawing();
-  setupMode();
   crashNote();
+  setupMode();
 }
 setup();

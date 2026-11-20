@@ -23,39 +23,62 @@ const jsonResponse = (obj, status = 200) =>
   new Response(JSON.stringify(obj), { status, headers: { "Content-Type": "application/json" } });
 const errorResponse = (detail, status = 400) => jsonResponse({ detail }, status);
 
+// Each kind of model gets its own worker. WebAssembly memory never shrinks, so the
+// only way to really give memory back (which phones need) is to terminate a worker.
+const WORKER_FOR = { ctd: "ctd", florence: "ocr", translit: "py", tidyCapitals: "py", clean: "py" };
+
 export class LocalBackend {
   constructor(assets) {
     this.assets = assets;
     this.jobs = new Map();
     this.onProgress = null;
-    this.calls = new Map();
+    this.workers = {};
     this.nextCall = 1;
-    this.worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
-    this.worker.onmessage = e => {
-      const { id, result, error, progress } = e.data;
-      if (progress) { if (this.onProgress) this.onProgress(progress); return; }
-      const call = this.calls.get(id);
-      if (!call) return;
-      this.calls.delete(id);
-      error ? call.reject(new Error(error)) : call.resolve(result);
-    };
     this.lowMemory = LOW_MEMORY;
-    this.ready = this.call("init", { urls: assets, lowMem: LOW_MEMORY });
+    this.ready = Promise.resolve();
     this.fontReady = new FontFace(FONT_FAMILY, `url(${assets.font})`).load()
       .then(f => document.fonts.add(f)).catch(() => {});
   }
 
+  worker(kind) {
+    if (!this.workers[kind]) {
+      const w = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
+      const calls = new Map();
+      w.onmessage = e => {
+        const { id, result, error, progress } = e.data;
+        if (progress) { if (this.onProgress) this.onProgress(progress); return; }
+        const call = calls.get(id);
+        if (!call) return;
+        calls.delete(id);
+        error ? call.reject(new Error(error)) : call.resolve(result);
+      };
+      // Messages are handled in order, so init always runs before the first real call
+      w.postMessage({ id: 0, op: "init", args: { urls: this.assets, lowMem: this.lowMemory, smallOcr: this.ocrMode === "florence-small" } });
+      this.workers[kind] = { w, calls };
+    }
+    return this.workers[kind];
+  }
+
   call(op, args = {}, transfer = []) {
+    const { w, calls } = this.worker(WORKER_FOR[op]);
     const id = this.nextCall++;
     return new Promise((resolve, reject) => {
-      this.calls.set(id, { resolve, reject });
-      this.worker.postMessage({ id, op, args }, transfer);
+      calls.set(id, { resolve, reject });
+      w.postMessage({ id, op, args }, transfer);
     });
   }
 
+  terminate(kind) {
+    const entry = this.workers[kind];
+    if (!entry) return;
+    entry.w.terminate();
+    for (const call of entry.calls.values()) call.reject(new Error("cancelled"));
+    delete this.workers[kind];
+  }
+
   // Called by the page when it's done reading a comic, or is about to pick a new one
-  async releaseModels() {
-    if (this.lowMemory) await this.call("release", { ctd: true, ocr: true });
+  releaseModels() {
+    if (this.lowMemory) { this.terminate("ctd"); this.terminate("ocr"); }
   }
 
   get ocrMode() { return localStorage.getItem("shavian-local-ocr") || "florence"; }
@@ -91,9 +114,10 @@ export class LocalBackend {
     return {
       ready: true, loading: null, local: true,
       device: `this device${gpu ? " (WebGPU)" : ""}`,
-      ocr: groq ? "Groq (your key)" : "Florence-2-base (on device)",
+      ocr: groq ? "Groq (your key)" : `Florence-2-base${this.ocrMode === "florence-small" ? ", smaller" : ""} (on device)`,
       low_memory: this.lowMemory,
-      ocr_batch: groq, ocr_fallback: null, dictionary: "amer",
+      // Phones read every region in one go, so the OCR model can be unloaded before Python runs
+      ocr_batch: groq || this.lowMemory, ocr_fallback: null, dictionary: "amer",
       uploads_per_day: null, uploads_left: null,
     };
   }
@@ -101,7 +125,7 @@ export class LocalBackend {
   // ------------------------------------------------------------ jobs
   async createJob(file) {
     await this.ready;
-    if (this.lowMemory) await this.call("release", { ctd: true, ocr: true });
+    this.releaseModels();
     const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
     let w = bitmap.width, h = bitmap.height;
     const scale = Math.min(1, MAX_SIDE / Math.max(w, h));
@@ -125,7 +149,7 @@ export class LocalBackend {
     const N = CTD_SIZE * CTD_SIZE, input = new Float32Array(3 * N);
     for (let i = 0; i < N; i++) { input[i] = sp[4 * i] / 255; input[N + i] = sp[4 * i + 1] / 255; input[2 * N + i] = sp[4 * i + 2] / 255; }
     const { seg, det } = await this.call("ctd", { input }, [input.buffer]);
-    if (this.lowMemory) await this.call("release", { ctd: true });  // make room for the OCR model
+    if (this.lowMemory) this.terminate("ctd");  // give its memory back before the OCR model loads
     const segFull = resizeMap(seg, nw, nh, w, h), detFull = resizeMap(det, nw, nh, w, h);
 
     const { regions, skipped, ctx } = detect(img, segFull, detFull);
@@ -147,6 +171,7 @@ export class LocalBackend {
       texts = await this.call("clean", { texts: await groqOcr(crops, this.groqKey) });
     } else {
       const raw = await this.call("florence", { crops: crops.map(c => c.up) });
+      if (this.lowMemory) this.terminate("ocr");  // never hold the OCR model and Python at once on phones
       texts = await this.call("tidyCapitals", { texts: raw });
     }
     const shavian = await this.call("translit", { texts });
