@@ -87,3 +87,6 @@ input[type=number] { width: 64px; }
 .local-settings select, .local-settings input { font-size: 13px; }
 .local-settings input { width: 220px; }
 .crash-note { background: var(--warn); border-radius: 8px; padding: 10px 14px; margin: 0 0 12px; font-size: 14px; }
+.resume { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px 12px; margin: 0 0 12px; font-size: 14px; }
+.regions-head span { display: inline-flex; gap: 12px; }

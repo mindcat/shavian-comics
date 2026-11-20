@@ -31,17 +31,36 @@ function crumb(step) {
     else localStorage.removeItem(CRUMB);
   } catch {}
 }
+async function savedComicInfo() {
+  try {
+    const { savedComic } = await import(new URL("web/local/backend.js", document.baseURI).href);
+    return await savedComic();
+  } catch { return null; }
+}
+
+async function showResume(crashed) {
+  const saved = await savedComicInfo();
+  if (!saved) return;
+  const el = $("#resume");
+  el.hidden = false;
+  $("#resume-name").textContent = saved.name;
+  $("#resume-hint").textContent = crashed
+    ? "Its text regions are kept; type the text yourself, or try reading it again."
+    : "";
+}
+
 function crashNote() {
   let c = null;
   try { c = JSON.parse(localStorage.getItem(CRUMB) || "null"); } catch {}
   crumb(null);
+  if (state.mode === "local" || c) showResume(Boolean(c));
   if (!c || Date.now() - c.at > 15 * 60 * 1000) return;
   const el = $("#crash-note");
   el.hidden = false;
   let next = "Try a smaller image, close other tabs, or switch “Read text with” to Groq (it needs far less memory).";
   // Died loading or running the OCR model: switch to the smaller one for the next try
   const current = localStorage.getItem("shavian-local-ocr") || "florence";
-  if (/OCR model|reading the text/.test(c.step) && current === "florence") {
+  if (/OCR model|reading/.test(c.step) && current === "florence") {
     localStorage.setItem("shavian-local-ocr", "florence-small");
     next = "The next try will use the smaller reading model (switched under “Read text with”). " +
       "If that fails too, Groq needs far less memory.";
@@ -54,7 +73,7 @@ async function local() {
     const { LocalBackend } = await import(new URL("web/local/backend.js", document.baseURI).href);
     localBackend = new LocalBackend(ASSETS);
     localBackend.onProgress = ({ what, loaded, total }) => {
-      crumb(`loading ${what}`);
+      crumb(what.startsWith("reading") ? what : `loading ${what}`);
       busy(total ? `downloading ${what}: ${Math.round(100 * loaded / total)}%` : `loading ${what}…`);
     };
   }
@@ -68,6 +87,8 @@ function setMode(mode) {
   localStorage.setItem("shavian-mode", mode);
   $$("#mode button").forEach(b => b.classList.toggle("active", b.dataset.mode === mode));
   $("#local-settings").hidden = mode !== "local";
+  $("#resume").hidden = true;
+  if (mode === "local" && !state.job) showResume(false);
   if (state.job) reset();
   pollStatus();
 }
@@ -105,8 +126,10 @@ async function pollStatus() {
       return;
     }
     el.textContent = `loading models: ${info.loading}…`;
-  } catch {
-    el.textContent = "can't reach the server · try “This device”";
+  } catch (e) {
+    el.textContent = state.mode === "local"
+      ? `couldn't start on-device mode: ${e.message}`
+      : "can't reach the server · try “This device”";
   }
   if (state.mode === "server") setTimeout(pollStatus, 2000);
 }
@@ -183,12 +206,74 @@ async function upload(file) {
     }
   }
   step("read", "done");
+  updateReadRest();
   if (state.mode === "local") {
     crumb("typesetting");
     (await local()).releaseModels();
   }
   await rerender();
   crumb(null);
+}
+
+// Reopen the last comic saved on this device (after a crash, or just later)
+async function resume() {
+  if (state.mode !== "local") setMode("local");
+  $("#resume").hidden = true;
+  $("#crash-note").hidden = true;
+  $("#drop").hidden = true;
+  $("#work").hidden = false;
+  ["detect", "read", "render"].forEach(s => step(s));
+  state.regions.clear();
+  state.selected = null;
+  $("#regions").innerHTML = "";
+  busy("reopening the last comic…");
+  try {
+    state.job = await json("/api/jobs/restore", "POST", {});
+  } catch (e) {
+    busy();
+    alert(`Couldn't reopen it: ${e.message}`);
+    return reset();
+  }
+  Object.values(state.urls).forEach(URL.revokeObjectURL);
+  state.urls = { original: state.job.original_url };
+  showImage();
+  state.job.regions.forEach(r => state.regions.set(r.id, r));
+  step("detect", "done");
+  drawAll();
+  const unread = [...state.regions.values()].filter(r => r.enabled && !r.read).length;
+  step("read", unread ? "" : "done");
+  updateReadRest();
+  await rerender();
+}
+
+// Read the regions that haven't been read yet, a few at a time so progress is saved as
+// it goes (if the page dies, resuming keeps what was already read)
+async function readRemaining() {
+  const todo = [...state.regions.values()].filter(r => r.enabled && !r.read);
+  if (!todo.length) return;
+  step("read", "doing");
+  if (state.mode === "local") crumb("reading the text");
+  const chunk = state.info && state.info.low_memory ? 3 : 1;
+  try {
+    for (let i = 0; i < todo.length; i += chunk) {
+      busy(`reading ${Math.min(i + chunk, todo.length)} / ${todo.length}…`);
+      (await json(`/api/jobs/${state.job.id}/ocr`, "POST", { ids: todo.slice(i, i + chunk).map(r => r.id) })).forEach(update);
+    }
+    step("read", "done");
+  } catch (e) {
+    alert(`Reading failed: ${e.message}`);
+  }
+  if (state.mode === "local") (await local()).releaseModels();
+  updateReadRest();
+  await rerender();
+  crumb(null);
+}
+
+function updateReadRest() {
+  const n = [...state.regions.values()].filter(r => r.enabled && !r.read).length;
+  const btn = $("#read-rest");
+  btn.hidden = !n;
+  btn.textContent = `read ${n} unread region${n === 1 ? "" : "s"}`;
 }
 
 async function readRegion(id) {
@@ -302,6 +387,7 @@ function drawAll() {
 }
 
 function updateCount() {
+  if ($("#read-rest")) updateReadRest();
   const all = [...state.regions.values()];
   $("#count").textContent = `${all.filter(r => r.enabled).length} on · ${all.length} found`;
 }
@@ -501,7 +587,9 @@ function setup() {
     $("#file").click();
   });
   $("#file").addEventListener("change", e => upload(e.target.files[0]));
-  $("#another").addEventListener("click", () => { reset(); $("#file").value = ""; });
+  $("#another").addEventListener("click", () => { reset(); $("#file").value = ""; if (state.mode === "local") showResume(false); });
+  $("#resume-btn").addEventListener("click", resume);
+  $("#read-rest").addEventListener("click", readRemaining);
   ["dragenter", "dragover"].forEach(t => document.addEventListener(t, e => {
     e.preventDefault(); document.body.classList.add("dragging"); }));
   ["dragleave", "drop"].forEach(t => document.addEventListener(t, e => {

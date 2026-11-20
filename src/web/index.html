@@ -30,6 +30,11 @@
 
 <main>
   <p id="crash-note" class="crash-note" hidden></p>
+  <p id="resume" class="resume" hidden>
+    Last comic on this device: <b id="resume-name"></b>
+    <button id="resume-btn" class="primary">Resume it</button>
+    <span id="resume-hint" class="hint"></span>
+  </p>
   <section id="drop" class="drop">
     <input id="file" type="file" accept="image/*" hidden>
     <p><strong>Drop a comic here</strong>, paste one, or <button id="pick" class="link">choose a file</button>.</p>
@@ -70,7 +75,10 @@
       <div class="regions-col">
         <div class="regions-head">
           <h2>Regions <span id="count"></span></h2>
-          <button id="another" class="link">new comic</button>
+          <span>
+            <button id="read-rest" class="link" hidden></button>
+            <button id="another" class="link">new comic</button>
+          </span>
         </div>
         <div id="regions"></div>
       </div>

@@ -349,7 +349,7 @@ def font_file(name: str):
 
 @app.get("/")
 def index():
-    return FileResponse(WEB_DIR / "index.html")
+    return FileResponse(WEB_DIR / "index.html", headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/report")
@@ -357,7 +357,16 @@ def report_redirect():
     return RedirectResponse("/report/")
 
 
-app.mount("/web", StaticFiles(directory=WEB_DIR), name="web")
+class FreshStaticFiles(StaticFiles):
+    """Static files the browser must revalidate each time, so updates reach phones."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+app.mount("/web", FreshStaticFiles(directory=WEB_DIR), name="web")
 if REPORT_DIR.exists():
     app.mount("/report", StaticFiles(directory=REPORT_DIR, html=True), name="report")
 

@@ -19,6 +19,51 @@ const GROQ_PREFERRED = ["llama-4-scout", "llama-4-maverick", "vision", "-vl", "q
 const OCR_PROMPT = "Transcribe the text, all lowercase unless it is a proper name or place. " +
   "If it isn't actual text, return an empty string.";
 
+// ---------------------------------------------------------------- saving the last comic
+// The page can be killed at any time (phones reload pages that use too much memory),
+// so the last comic is kept in IndexedDB: the image, the detector's two maps as bits
+// (detection is deterministic, so re-running it on them rebuilds the same regions),
+// boxes drawn by hand, and every region's text and settings.
+const DB_NAME = "shavian-comics", DB_STORE = "jobs", SAVED = "last";
+
+function idb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = () => req.result.createObjectStore(DB_STORE);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbDo(mode, fn) {
+  const db = await idb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DB_STORE, mode);
+    const req = fn(tx.objectStore(DB_STORE));
+    tx.oncomplete = () => { db.close(); resolve(req && req.result); };
+    tx.onerror = tx.onabort = () => { db.close(); reject(tx.error); };
+  });
+}
+
+export async function savedComic() {
+  try {
+    const rec = await idbDo("readonly", st => st.get(SAVED));
+    return rec ? { name: rec.name, savedAt: rec.savedAt, regions: rec.nRegions } : null;
+  } catch { return null; }
+}
+
+function packBits(values, threshold) {
+  const out = new Uint8Array((values.length + 7) >> 3);
+  for (let i = 0; i < values.length; i++) if (values[i] > threshold) out[i >> 3] |= 1 << (i & 7);
+  return out;
+}
+
+function unpackBits(bits, n) {
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) out[i] = (bits[i >> 3] >> (i & 7)) & 1;
+  return out;
+}
+
 const jsonResponse = (obj, status = 200) =>
   new Response(JSON.stringify(obj), { status, headers: { "Content-Type": "application/json" } });
 const errorResponse = (detail, status = 400) => jsonResponse({ detail }, status);
@@ -94,12 +139,18 @@ export class LocalBackend {
       if (parts[0] === "info") return jsonResponse(await this.info());
       if (parts[0] !== "jobs") return errorResponse("Not found", 404);
       if (parts.length === 1 && method === "POST") return jsonResponse(await this.createJob(body.get("file")));
+      if (parts[1] === "restore") return jsonResponse(await this.restoreJob());
       const job = this.jobs.get(parts[1]);
       if (!job) return errorResponse("Unknown or expired job; upload the image again", 404);
       if (parts[2] === "ocr") return jsonResponse(await this.readRegions(job, body.ids));
       if (parts[2] === "regions" && parts.length === 3) return jsonResponse(await this.addRegion(job, body.box));
       if (parts[2] === "regions" && method === "PATCH") return jsonResponse(await this.editRegion(job, Number(parts[3]), body));
-      if (parts[2] === "regions" && method === "DELETE") { job.regions.delete(Number(parts[3])); return jsonResponse({ ok: true }); }
+      if (parts[2] === "regions" && method === "DELETE") {
+        job.deleted.add(Number(parts[3]));
+        job.regions.delete(Number(parts[3]));
+        this.persist(job);
+        return jsonResponse({ ok: true });
+      }
       if (parts[2] === "render.png") return await this.render(job, url.searchParams.get("stage") || "final");
       return errorResponse("Not found", 404);
     } catch (e) {
@@ -149,17 +200,60 @@ export class LocalBackend {
     const N = CTD_SIZE * CTD_SIZE, input = new Float32Array(3 * N);
     for (let i = 0; i < N; i++) { input[i] = sp[4 * i] / 255; input[N + i] = sp[4 * i + 1] / 255; input[2 * N + i] = sp[4 * i + 2] / 255; }
     const { seg, det } = await this.call("ctd", { input }, [input.buffer]);
+    const segFull0 = resizeMap(seg, nw, nh, w, h), detFull0 = resizeMap(det, nw, nh, w, h);
+    const saved = { name: (file.name || "comic").replace(/\.[^.]+$/, ""), file, w, h,
+                    ink: packBits(segFull0, 0.4), lines: packBits(detFull0, 0.3), manual: [], state: {} };
     if (this.lowMemory) this.terminate("ctd");  // give its memory back before the OCR model loads
-    const segFull = resizeMap(seg, nw, nh, w, h), detFull = resizeMap(det, nw, nh, w, h);
+    // Detection only needs the thresholded maps, which is exactly what gets saved
+    const job = this.buildJob(img, unpackBits(saved.ink, w * h), unpackBits(saved.lines, w * h), saved);
+    this.persist(job);
+    return { ...jobJson(job), uploads_left: null };
+  }
 
-    const { regions, skipped, ctx } = detect(img, segFull, detFull);
-    const job = { id: Math.random().toString(36).slice(2, 14), name: (file.name || "comic").replace(/\.[^.]+$/, ""),
-                  img, ctx, regions: new Map(), nextId: 1, eraseKey: null, erased: null };
+  buildJob(img, seg, det, saved) {
+    const { regions, skipped, ctx } = detect(img, seg, det);
+    const job = { id: Math.random().toString(36).slice(2, 14), name: saved.name, img, ctx, regions: new Map(),
+                  nextId: 1, eraseKey: null, erased: null, saved, deleted: new Set() };
     for (const reg of regions) addTo(job, reg, true);
     for (const [box, reason] of skipped) addTo(job, regionFromBox(ctx, box, `skipped: ${reason}`), false);
+    for (const box of saved.manual) addTo(job, regionFromBox(ctx, box), true);
     this.jobs.set(job.id, job);
     while (this.jobs.size > 8) this.jobs.delete(this.jobs.keys().next().value);
-    return { ...jobJson(job), uploads_left: null };
+    return job;
+  }
+
+  // Save the job's state (debounced); failures (e.g. private browsing) are ignored
+  persist(job) {
+    clearTimeout(job.persistTimer);
+    job.persistTimer = setTimeout(async () => {
+      const state = {};
+      for (const r of job.regions.values()) state[r.id] = { english: r.english, shavian: r.shavian, read: r.read, settings: r.settings };
+      for (const id of job.deleted) state[id] = { deleted: true };
+      const rec = { ...job.saved, state, savedAt: Date.now(), nRegions: job.regions.size };
+      try { await idbDo("readwrite", st => st.put(rec, SAVED)); } catch (e) { console.warn("couldn't save the comic", e); }
+    }, 300);
+  }
+
+  async restoreJob() {
+    const rec = await idbDo("readonly", st => st.get(SAVED));
+    if (!rec) throw new Error("No saved comic to resume");
+    const bitmap = await createImageBitmap(rec.file, { imageOrientation: "from-image" });
+    const canvas = new OffscreenCanvas(rec.w, rec.h);
+    const c = canvas.getContext("2d", { willReadFrequently: true });
+    c.fillStyle = "#fff";
+    c.fillRect(0, 0, rec.w, rec.h);
+    c.imageSmoothingQuality = "high";
+    c.drawImage(bitmap, 0, 0, rec.w, rec.h);
+    const img = { w: rec.w, h: rec.h, px: c.getImageData(0, 0, rec.w, rec.h).data };
+    const job = this.buildJob(img, unpackBits(rec.ink, rec.w * rec.h), unpackBits(rec.lines, rec.w * rec.h), rec);
+    for (const [id, st] of Object.entries(rec.state || {})) {
+      const r = job.regions.get(Number(id));
+      if (!r) continue;
+      if (st.deleted) { job.regions.delete(r.id); job.deleted.add(r.id); continue; }
+      Object.assign(r, { english: st.english, shavian: st.shavian || "", read: !!st.read });
+      Object.assign(r.settings, st.settings || {});
+    }
+    return { ...jobJson(job), restored: true, original_url: URL.createObjectURL(rec.file), uploads_left: null };
   }
 
   async readRegions(job, ids) {
@@ -176,14 +270,18 @@ export class LocalBackend {
     }
     const shavian = await this.call("translit", { texts });
     regs.forEach((r, k) => { r.english = texts[k]; r.shavian = shavian[k]; r.read = true; });
+    this.persist(job);
     return regs.map(regionJson);
   }
 
   async addRegion(job, box) {
     const [x1, y1, x2, y2] = box;
     if (Math.abs(x2 - x1) < 4 || Math.abs(y2 - y1) < 4) throw new Error("Box too small");
-    const r = regionFromBox(job.ctx, [Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(y1, y2)]);
-    return regionJson(addTo(job, r, true));
+    const ordered = [Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(y1, y2)];
+    const r = addTo(job, regionFromBox(job.ctx, ordered), true);
+    job.saved.manual.push(ordered);  // rebuilt in the same order on resume, so ids match
+    this.persist(job);
+    return regionJson(r);
   }
 
   async editRegion(job, rid, body) {
@@ -196,6 +294,7 @@ export class LocalBackend {
     }
     if (body.shavian != null) r.shavian = body.shavian.trim();
     for (const k of ["enabled", "eraser", "size"]) if (body[k] != null) r.settings[k] = body[k];
+    this.persist(job);
     return regionJson(r);
   }
 
