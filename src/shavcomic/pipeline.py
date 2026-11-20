@@ -26,7 +26,10 @@ def ocr_all(images, detections, backend):
     """Fills region.ocr[backend] for every region of every image."""
     for name, (regions, _) in detections.items():
         print(f"[ocr:{backend}] {name}: {len(regions)} regions")
-        crops = [ocr.crop_for_ocr(images[name], r) for r in regions]
+        if backend in ocr.LINE_BACKENDS:
+            crops = [ocr.line_crops(images[name], r) for r in regions]
+        else:
+            crops = [ocr.crop_for_ocr(images[name], r) for r in regions]
         for r, text in zip(regions, ocr.BACKENDS[backend](crops)):
             r.ocr[backend] = text
 

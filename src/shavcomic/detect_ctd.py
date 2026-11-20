@@ -172,7 +172,7 @@ def hugs_text(interior, lines):
 def bubble_region(ink, interior, bg, lines, note=""):
     text = ink & np.logical_or.reduce([rect_mask(ink.shape, l, pad=2) for l in lines])
     return Region(
-        kind="bubble", box=union_box(lines), layout_mask=interior,
+        kind="bubble", box=union_box(lines), layout_mask=interior, lines=sorted(lines, key=lambda l: (l[1], l[0])),
         erase_mask=ndimage.binary_erosion(interior, iterations=1), text_mask=text, bg=bg,
         letter_height=float(np.median([l[3] - l[1] for l in lines])), note=note or f"{len(lines)} line(s) in bubble",
     )
@@ -203,7 +203,7 @@ def free_region(image_rgb, ink, lines, note=""):
     if layout.sum() < 0.6 * room.sum():  # text over busy artwork: don't let the art squeeze it out
         layout = room
     return Region(
-        kind="free", box=box, layout_mask=layout,
+        kind="free", box=box, layout_mask=layout, lines=sorted(lines, key=lambda l: (l[1], l[0])),
         erase_mask=ndimage.binary_dilation(text, iterations=3) & ~art,
         text_mask=text, bg=bg,
         letter_height=lh, note=note or f"{len(lines)} free line(s)",

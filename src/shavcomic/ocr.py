@@ -59,14 +59,14 @@ def qwen(crops):
     return out
 
 
-def florence(crops):
+def florence(crops, model_id=None):
     """
     Florence-2 '<OCR_WITH_REGION>': reads each line of lettering separately, exactly
     as written (capitals). Lines are then joined and the text re-cased with the
     Shavian dictionary's help. (Plain '<OCR>' sometimes drops the line breaks,
     gluing words together: "80%WATER".)
     """
-    model, processor = models.florence()
+    model, processor = models.florence(model_id)
     task = "<OCR_WITH_REGION>"
     out = []
     for c in crops:
@@ -76,7 +76,65 @@ def florence(crops):
         raw = processor.batch_decode(ids, skip_special_tokens=False)[0]
         lines = processor.post_process_generation(raw, task=task, image_size=c.size)[task]["labels"]
         lines = [l.replace("</s>", "").replace("<s>", "").strip() for l in lines]
-        out.append(_clean(translit.recase(join_lines("\n".join(l for l in lines if l)))))
+        out.append(textproc.tidy_capitals("\n".join(l for l in lines if l), translit.engine().dictionary))
+    return out
+
+
+def line_crops(image, region):
+    """
+    One image per text line (for line-level OCR such as TrOCR), top to bottom.
+    Uses the detector's lines; a region without them (e.g. a box drawn by hand) is
+    split where rows of its text pixels are empty.
+    """
+    lines = list(region.lines)
+    if not lines:
+        x1, y1, x2, y2 = region.box
+        rows = region.text_mask[y1:y2, x1:x2].any(axis=1)
+        start = None
+        for i, on in enumerate(list(rows) + [False]):
+            if on and start is None:
+                start = i
+            elif not on and start is not None:
+                if i - start >= 4:
+                    lines.append((x1, y1 + start, x2, y1 + i))
+                start = None
+    w, h = image.size
+    rgb = image.convert("RGB")
+    out = []
+    for x1, y1, x2, y2 in lines:
+        pad = max(3, int(0.25 * (y2 - y1)))
+        out.append(rgb.crop((max(0, x1 - pad), max(0, y1 - pad), min(w, x2 + pad), min(h, y2 + pad))))
+    return out
+
+
+def trocr(line_sets, model_id):
+    """TrOCR reads one line of text at a time: each item is a list of line images."""
+    model, processor = models.trocr(model_id)
+    out = []
+    for lines in line_sets:
+        if not lines:
+            out.append("")
+            continue
+        pixel_values = processor(images=lines, return_tensors="pt").pixel_values.to(model.device)
+        with torch.inference_mode():
+            ids = model.generate(pixel_values, max_new_tokens=64, num_beams=3)
+        texts = processor.batch_decode(ids, skip_special_tokens=True)
+        out.append(textproc.tidy_capitals("\n".join(t.strip() for t in texts if t.strip()), translit.engine().dictionary))
+    return out
+
+
+def smolvlm(crops, model_id):
+    model, processor = models.smolvlm(model_id)
+    out = []
+    for c in crops:
+        messages = [{"role": "user", "content": [
+            {"type": "image"}, {"type": "text", "text": config.OCR_PROMPT + " Reply with the text only."}]}]
+        prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
+        inputs = processor(text=prompt, images=[c], return_tensors="pt").to(model.device)
+        with torch.inference_mode():
+            ids = model.generate(**inputs, max_new_tokens=160, do_sample=False)
+        text = processor.batch_decode(ids[:, inputs["input_ids"].shape[1]:], skip_special_tokens=True)[0]
+        out.append(_clean(text))
     return out
 
 
@@ -204,4 +262,13 @@ def groq(crops):
     return out
 
 
-BACKENDS = {"moondream": moondream, "qwen": qwen, "florence": florence, "groq": groq}
+BACKENDS = {
+    "moondream": moondream, "qwen": qwen, "florence": florence, "groq": groq,
+    "florence-base": lambda c: florence(c, "florence-community/Florence-2-base"),
+    "florence-large": lambda c: florence(c, "florence-community/Florence-2-large"),
+    "trocr-small": lambda c: trocr(c, "microsoft/trocr-small-handwritten"),
+    "trocr-base": lambda c: trocr(c, "microsoft/trocr-base-handwritten"),
+    "smolvlm-256m": lambda c: smolvlm(c, "HuggingFaceTB/SmolVLM-256M-Instruct"),
+    "smolvlm-500m": lambda c: smolvlm(c, "HuggingFaceTB/SmolVLM-500M-Instruct"),
+}
+LINE_BACKENDS = {"trocr-small", "trocr-base"}  # take a list of line images per region

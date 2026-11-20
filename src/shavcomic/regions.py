@@ -17,6 +17,7 @@ class Region:
     letter_height: float   # original lettering cap height in px (0 if unknown)
     score: float = 1.0
     note: str = ""
+    lines: list = field(default_factory=list)     # text line boxes, top to bottom (if known)
     # filled in by later stages
     ocr: dict = field(default_factory=dict)       # backend -> English text
     shavian: dict = field(default_factory=dict)   # backend -> Shavian text

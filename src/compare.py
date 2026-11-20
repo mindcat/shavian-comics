@@ -23,10 +23,16 @@ from shavcomic import config, models, ocr, pipeline  # noqa: E402
 
 OUT = config.OUTPUT_DIR / "compare"
 LABELS = {
-    "qwen": "Qwen3-VL-2B (local)",
-    "florence": "Florence-2 (local)",
+    "qwen": "Qwen3-VL-2B",
+    "florence": "Florence-2 (large)",
+    "florence-base": "Florence-2-base",
+    "florence-large": "Florence-2-large",
+    "trocr-small": "TrOCR-small (per line)",
+    "trocr-base": "TrOCR-base (per line)",
+    "smolvlm-256m": "SmolVLM-256M",
+    "smolvlm-500m": "SmolVLM-500M",
     "groq": "Groq (hosted API)",
-    "moondream": "moondream2 (local)",
+    "moondream": "moondream2",
 }
 
 
@@ -98,6 +104,17 @@ def main():
         pipeline.translit_all([det], b)
 
     bench = cpu_bench(images, det) if args.cpu_bench else {}
+
+    # Every region's text per backend, for scoring against a reference (tools/score_ocr.py)
+    import json
+    OUT.mkdir(parents=True, exist_ok=True)
+    (OUT / "results.json").write_text(json.dumps({
+        "backends": ran,
+        "seconds_per_region": {b: timings[f"ocr {b}"] / max(n_regions, 1) for b in ran},
+        "regions": [{"strip": stem, "n": i, "kind": r.kind, "box": [int(v) for v in r.box],
+                     "text": {b: r.ocr.get(b, "") for b in ran}}
+                    for stem, (regs, _) in det.items() for i, r in enumerate(regs, 1)],
+    }, indent=1, ensure_ascii=False), encoding="utf-8")
 
     report = {}
     for stem, img in images.items():

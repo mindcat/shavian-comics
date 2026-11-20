@@ -16,7 +16,9 @@ def _get(name, loader):
 
 
 def unload(*names):  # noqa: D401
-    for name in names or list(_cache):
+    """Unload models by name; a name also matches its variants ("florence" -> "florence:<id>")."""
+    names = [k for k in _cache if not names or k in names or k.split(":")[0] in names]
+    for name in names:
         if _cache.pop(name, None) is not None:
             print(f"[models] unloaded {name}")
     gc.collect()
@@ -51,15 +53,38 @@ def qwen():
     return _get("qwen", load)
 
 
-def florence():
+def florence(model_id=None):
+    model_id = model_id or config.FLORENCE_ID
+
     def load():
         from transformers import AutoProcessor, Florence2ForConditionalGeneration
 
         dtype = torch.float16 if config.DEVICE == "cuda" else torch.float32
-        model = Florence2ForConditionalGeneration.from_pretrained(config.FLORENCE_ID, dtype=dtype)
-        return model.to(config.DEVICE).eval(), AutoProcessor.from_pretrained(config.FLORENCE_ID)
+        model = Florence2ForConditionalGeneration.from_pretrained(model_id, dtype=dtype)
+        return model.to(config.DEVICE).eval(), AutoProcessor.from_pretrained(model_id)
 
-    return _get("florence", load)
+    return _get(f"florence:{model_id}", load)
+
+
+def trocr(model_id):
+    def load():
+        from transformers import TrOCRProcessor, VisionEncoderDecoderModel
+
+        model = VisionEncoderDecoderModel.from_pretrained(model_id)
+        return model.to(config.DEVICE).eval(), TrOCRProcessor.from_pretrained(model_id)
+
+    return _get(f"trocr:{model_id}", load)
+
+
+def smolvlm(model_id):
+    def load():
+        from transformers import AutoModelForImageTextToText, AutoProcessor
+
+        dtype = torch.bfloat16 if config.DEVICE == "cuda" else torch.float32
+        model = AutoModelForImageTextToText.from_pretrained(model_id, dtype=dtype)
+        return model.to(config.DEVICE).eval(), AutoProcessor.from_pretrained(model_id)
+
+    return _get(f"smolvlm:{model_id}", load)
 
 
 def yolo():
