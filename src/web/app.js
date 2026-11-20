@@ -21,12 +21,36 @@ const ASSETS = {
           classes: `${ASSET_BASE}/nltk-tagger-classes.json` },
 };
 let localBackend = null;
+
+// Crash note: mobile browsers silently reload a tab that runs out of memory. Record the
+// current step while working on this device, so after such a reload we can say where.
+const CRUMB = "shavian-local-step";
+function crumb(step) {
+  try {
+    if (step) localStorage.setItem(CRUMB, JSON.stringify({ step, at: Date.now() }));
+    else localStorage.removeItem(CRUMB);
+  } catch {}
+}
+function crashNote() {
+  let c = null;
+  try { c = JSON.parse(localStorage.getItem(CRUMB) || "null"); } catch {}
+  crumb(null);
+  if (!c || Date.now() - c.at > 15 * 60 * 1000) return;
+  const el = $("#crash-note");
+  el.hidden = false;
+  el.innerHTML = `<b>The last comic didn't finish:</b> the page reloaded while <i>${c.step}</i>. ` +
+    "That usually means the browser closed the page for using too much memory. " +
+    "Try a smaller image, close other tabs, or switch “Read text with” to Groq (it needs far less memory). " +
+    "If it keeps happening, please note the step above.";
+}
 async function local() {
   if (!localBackend) {
     const { LocalBackend } = await import(new URL("web/local/backend.js", document.baseURI).href);
     localBackend = new LocalBackend(ASSETS);
-    localBackend.onProgress = ({ what, loaded, total }) =>
+    localBackend.onProgress = ({ what, loaded, total }) => {
+      crumb(`loading ${what}`);
       busy(total ? `downloading ${what}: ${Math.round(100 * loaded / total)}%` : `loading ${what}…`);
+    };
   }
   return localBackend;
 }
@@ -123,10 +147,12 @@ async function upload(file) {
 
   const form = new FormData();
   form.append("file", file);
+  if (state.mode === "local") crumb("finding the text");
   try {
     state.job = await (await api("/api/jobs", { method: "POST", body: form })).json();
   } catch (e) {
     busy();
+    crumb(null);
     alert(`Upload failed: ${e.message}`);
     return reset();
   }
@@ -139,6 +165,7 @@ async function upload(file) {
   // Read the enabled regions one by one so the cards fill in as we go (or all at
   // once, for backends that are faster that way, like the Groq API)
   step("read", "doing");
+  if (state.mode === "local") crumb("reading the text");
   const todo = [...state.regions.values()].filter(r => r.enabled);
   if (state.info && state.info.ocr_batch) {
     busy(`reading ${todo.length} regions…`);
@@ -150,7 +177,12 @@ async function upload(file) {
     }
   }
   step("read", "done");
+  if (state.mode === "local") {
+    crumb("typesetting");
+    (await local()).releaseModels();
+  }
   await rerender();
+  crumb(null);
 }
 
 async function readRegion(id) {
@@ -456,7 +488,11 @@ function setupMode() {
 }
 
 function setup() {
-  $("#pick").addEventListener("click", () => $("#file").click());
+  // Free on-device models before the photo picker opens (phones may unload the page meanwhile)
+  $("#pick").addEventListener("click", () => {
+    if (localBackend) localBackend.releaseModels();
+    $("#file").click();
+  });
   $("#file").addEventListener("change", e => upload(e.target.files[0]));
   $("#another").addEventListener("click", () => { reset(); $("#file").value = ""; });
   ["dragenter", "dragover"].forEach(t => document.addEventListener(t, e => {
@@ -474,5 +510,6 @@ function setup() {
   $("#overlay").addEventListener("click", () => { if (!state.drawing) select(null); });
   setupDrawing();
   setupMode();
+  crashNote();
 }
 setup();

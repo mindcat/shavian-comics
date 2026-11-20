@@ -4,7 +4,16 @@ import * as ip from "./imgproc.js";
 import { detect, regionFromBox } from "./detect.js";
 import { ERASERS, drawText, FONT_FAMILY } from "./render.js";
 
-const MAX_SIDE = 2000, CTD_SIZE = 1024;
+const CTD_SIZE = 1024;
+
+// Phones and tablets get a lower-memory profile: a smaller working image, CPU only,
+// and only one big model in memory at a time (mobile browsers silently reload a tab
+// that uses too much memory)
+export const LOW_MEMORY = Boolean(
+  navigator.userAgentData?.mobile || /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) ||
+  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1) ||  // iPadOS
+  (navigator.deviceMemory && navigator.deviceMemory <= 4));
+const MAX_SIDE = LOW_MEMORY ? 1400 : 2000;
 const GROQ_URL = "https://api.groq.com/openai/v1";
 const GROQ_PREFERRED = ["llama-4-scout", "llama-4-maverick", "vision", "-vl", "qwen"];
 const OCR_PROMPT = "Transcribe the text, all lowercase unless it is a proper name or place. " +
@@ -30,7 +39,8 @@ export class LocalBackend {
       this.calls.delete(id);
       error ? call.reject(new Error(error)) : call.resolve(result);
     };
-    this.ready = this.call("init", { urls: assets });
+    this.lowMemory = LOW_MEMORY;
+    this.ready = this.call("init", { urls: assets, lowMem: LOW_MEMORY });
     this.fontReady = new FontFace(FONT_FAMILY, `url(${assets.font})`).load()
       .then(f => document.fonts.add(f)).catch(() => {});
   }
@@ -41,6 +51,11 @@ export class LocalBackend {
       this.calls.set(id, { resolve, reject });
       this.worker.postMessage({ id, op, args }, transfer);
     });
+  }
+
+  // Called by the page when it's done reading a comic, or is about to pick a new one
+  async releaseModels() {
+    if (this.lowMemory) await this.call("release", { ctd: true, ocr: true });
   }
 
   get ocrMode() { return localStorage.getItem("shavian-local-ocr") || "florence"; }
@@ -77,6 +92,7 @@ export class LocalBackend {
       ready: true, loading: null, local: true,
       device: `this device${gpu ? " (WebGPU)" : ""}`,
       ocr: groq ? "Groq (your key)" : "Florence-2-base (on device)",
+      low_memory: this.lowMemory,
       ocr_batch: groq, ocr_fallback: null, dictionary: "amer",
       uploads_per_day: null, uploads_left: null,
     };
@@ -85,6 +101,7 @@ export class LocalBackend {
   // ------------------------------------------------------------ jobs
   async createJob(file) {
     await this.ready;
+    if (this.lowMemory) await this.call("release", { ctd: true, ocr: true });
     const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
     let w = bitmap.width, h = bitmap.height;
     const scale = Math.min(1, MAX_SIDE / Math.max(w, h));
@@ -108,6 +125,7 @@ export class LocalBackend {
     const N = CTD_SIZE * CTD_SIZE, input = new Float32Array(3 * N);
     for (let i = 0; i < N; i++) { input[i] = sp[4 * i] / 255; input[N + i] = sp[4 * i + 1] / 255; input[2 * N + i] = sp[4 * i + 2] / 255; }
     const { seg, det } = await this.call("ctd", { input }, [input.buffer]);
+    if (this.lowMemory) await this.call("release", { ctd: true });  // make room for the OCR model
     const segFull = resizeMap(seg, nw, nh, w, h), detFull = resizeMap(det, nw, nh, w, h);
 
     const { regions, skipped, ctx } = detect(img, segFull, detFull);

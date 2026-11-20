@@ -12,23 +12,25 @@ export const unionBox = boxes => [
   Math.min(...boxes.map(b => b[0])), Math.min(...boxes.map(b => b[1])),
   Math.max(...boxes.map(b => b[2])), Math.max(...boxes.map(b => b[3]))];
 
-// The bg-coloured region overlapping the seed most, with holes filled (colour_region)
-function colourRegion(img, seed, bg, tol, margin) {
+// The bg-coloured region overlapping the seed box most, with holes filled (colour_region).
+// Works inside a window around the box; masks come back in window coordinates.
+function colourRegion(img, box, bg, tol, margin) {
   const { w, h, px } = img;
-  const box = ip.bbox(seed, w, h);
   const x1 = Math.max(0, box[0] - margin), y1 = Math.max(0, box[1] - margin);
   const x2 = Math.min(w, box[2] + margin), y2 = Math.min(h, box[3] + margin);
   const cw = x2 - x1, ch = y2 - y1;
-  const isBg = new Uint8Array(cw * ch), seedC = new Uint8Array(cw * ch);
+  const isBg = new Uint8Array(cw * ch);
   for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++) {
-    const i = (y + y1) * w + x + x1, j = y * cw + x;
-    seedC[j] = seed[i];
-    isBg[j] = Math.max(Math.abs(px[4 * i] - bg[0]), Math.abs(px[4 * i + 1] - bg[1]), Math.abs(px[4 * i + 2] - bg[2])) <= tol ? 1 : 0;
+    const i = (y + y1) * w + x + x1;
+    isBg[y * cw + x] = Math.max(Math.abs(px[4 * i] - bg[0]), Math.abs(px[4 * i + 1] - bg[1]), Math.abs(px[4 * i + 2] - bg[2])) <= tol ? 1 : 0;
   }
   const { labels, n } = ip.label(isBg, cw, ch);
   if (!n) return null;
   const overlap = new Int32Array(n + 1);
-  for (let j = 0; j < labels.length; j++) if (seedC[j] && labels[j]) overlap[labels[j]]++;
+  for (let y = box[1]; y < box[3]; y++) for (let x = box[0]; x < box[2]; x++) {
+    const l = labels[(y - y1) * cw + x - x1];
+    if (l) overlap[l]++;
+  }
   let best = 1;
   for (let k = 2; k <= n; k++) if (overlap[k] > overlap[best]) best = k;
   if (!overlap[best]) return null;
@@ -38,12 +40,24 @@ function colourRegion(img, seed, bg, tol, margin) {
   let touches = false;
   for (let x = 0; x < cw && !touches; x++) touches = (y1 > 0 && raw[x]) || (y2 < h && raw[(ch - 1) * cw + x]);
   for (let y = 0; y < ch && !touches; y++) touches = (x1 > 0 && raw[y * cw]) || (x2 < w && raw[y * cw + cw - 1]);
-  const fullRaw = ip.newMask(w, h), fullFilled = ip.newMask(w, h);
-  for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++) {
-    fullRaw[(y + y1) * w + x + x1] = raw[y * cw + x];
-    fullFilled[(y + y1) * w + x + x1] = filled[y * cw + x];
+  return { x1, y1, cw, ch, filled, raw, bg, enclosed: !touches };
+}
+
+// Most common colour (binned, bin centre) of the pixels in a box, skipping masked ones
+function dominantInBox(img, box, skip) {
+  const { w, px } = img;
+  const counts = new Map();
+  let n = 0;
+  for (let y = box[1]; y < box[3]; y++) for (let x = box[0]; x < box[2]; x++) {
+    const i = y * w + x;
+    if (skip && skip[i]) continue;
+    const key = ((px[4 * i] >> 3) << 10) | ((px[4 * i + 1] >> 3) << 5) | (px[4 * i + 2] >> 3);
+    counts.set(key, (counts.get(key) || 0) + 1);
+    n++;
   }
-  return { filled: fullFilled, raw: fullRaw, bg, enclosed: !touches };
+  let best = 0, bestN = -1;
+  for (const [k, c] of counts) if (c > bestN) { best = k; bestN = c; }
+  return { n, colour: [((best >> 10) & 31) * 8 + 4, ((best >> 5) & 31) * 8 + 4, (best & 31) * 8 + 4] };
 }
 
 function findLines(seg, det, w, h) {
@@ -114,20 +128,31 @@ function groupFreeLines(lines) {
 
 function findBubble(img, box, inkWide, typical) {
   const { w, h } = img;
+  box = box.map(v => Math.round(v));
   const lh = box[3] - box[1];
-  const seed = ip.rectMask(w, h, box);
-  const between = ip.andNot(seed, inkWide);
-  const bg = ip.dominantColour(img, ip.count(between) > 20 ? between : seed);
-  const found = colourRegion(img, seed, bg, 40, Math.floor(BUBBLE_SEARCH * Math.min(lh, 2 * typical)));
-  if (!found) return null;
-  const { filled, raw, enclosed } = found;
-  const holes = ip.andNot(ip.andNot(filled, raw), inkWide);
-  const nFilled = ip.count(filled);
-  if (!(enclosed && ip.count(ip.and(filled, seed)) >= 0.9 * ip.count(seed) && ip.count(holes) <= MAX_NONTEXT_HOLES * nFilled
-        && ip.solidity(filled, w, h) >= MIN_SOLIDITY)) return null;
-  const { boxes } = ip.label(holes, w, h);
+  // Background between the letters (bold text would skew the colour)
+  const between = dominantInBox(img, box, inkWide);
+  const bg = between.n > 20 ? between.colour : dominantInBox(img, box, null).colour;
+  const found = colourRegion(img, box, bg, 40, Math.floor(BUBBLE_SEARCH * Math.min(lh, 2 * typical)));
+  if (!found || !found.enclosed) return null;
+  const { x1, y1, cw, ch, filled, raw } = found;
+  const seedArea = (box[2] - box[0]) * (box[3] - box[1]);
+  let seedIn = 0;
+  for (let y = box[1]; y < box[3]; y++) for (let x = box[0]; x < box[2]; x++) seedIn += filled[(y - y1) * cw + x - x1];
+  const holes = new Uint8Array(cw * ch);
+  let nFilled = 0, nHoles = 0;
+  for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++) {
+    const j = y * cw + x;
+    nFilled += filled[j];
+    if (filled[j] && !raw[j] && !inkWide[(y + y1) * w + x + x1]) { holes[j] = 1; nHoles++; }
+  }
+  if (!(seedIn >= 0.9 * seedArea && nHoles <= MAX_NONTEXT_HOLES * nFilled && ip.solidity(filled, cw, ch) >= MIN_SOLIDITY)) return null;
+  // Something tall enclosed with the text (a stick figure on a plain panel): a panel, not a bubble
+  const { boxes } = ip.label(holes, cw, ch);
   if (boxes.length && Math.max(...boxes.map(b => b[3] - b[1])) > MAX_HOLE_HEIGHT * lh) return null;
-  return { interior: filled, bg: found.bg };
+  const interior = ip.newMask(w, h);
+  for (let y = 0; y < ch; y++) interior.set(filled.subarray(y * cw, (y + 1) * cw), (y + y1) * w + x1);
+  return { interior, bg };
 }
 
 function hugsText(interior, lines, w, h) {

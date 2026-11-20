@@ -12,6 +12,7 @@ const FLORENCE_ID = "onnx-community/Florence-2-base-ft";
 const CTD_SIZE = 1024;
 
 let assets = null;       // {ctd, dict, shaw, textproc, nltk: {weights, tagdict, classes}}
+let lowMemory = false;   // phones/tablets: CPU only, and models are released between comics
 let ctdSession = null, florence = null, py = null;
 const loading = {};
 
@@ -53,6 +54,7 @@ async function cachedBytes(url, what) {
 }
 
 async function hasWebGPU() {
+  if (lowMemory) return false;  // keep phones on the CPU path: lower memory, fewer GPU-process crashes
   try { return !!(navigator.gpu && await navigator.gpu.requestAdapter()); } catch { return false; }
 }
 
@@ -158,8 +160,17 @@ async function pyCall(fn, texts) {
   return js;
 }
 
+// Free models so the browser doesn't kill the tab for using too much memory
+async function release({ ctd = false, ocr = false, python = false }) {
+  if (ctd && ctdSession) { try { await ctdSession.release(); } catch {} ctdSession = null; delete loading.ctd; }
+  if (ocr && florence) { try { await florence.model.dispose(); } catch {} florence = null; delete loading.florence; }
+  if (python && py) { py = null; delete loading.py; }
+  return true;
+}
+
 const ops = {
-  init: async ({ urls }) => { assets = urls; return true; },
+  init: async ({ urls, lowMem }) => { assets = urls; lowMemory = !!lowMem; return true; },
+  release,
   ctd: runCtd,
   florence: runFlorence,
   // shaw.py (with NLTK tagging) on a batch of English texts
