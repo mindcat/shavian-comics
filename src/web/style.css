@@ -78,3 +78,11 @@ input[type=number] { width: 64px; }
 .card.empty .note::after { content: " · no text found (tap to edit)"; }
 #allowance { font-weight: 600; color: var(--accent); }
 #allowance.none-left { color: #b5472f; }
+.header-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.mode { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
+.mode button { border: 0; border-radius: 0; padding: 4px 12px; font-size: 13px; }
+.mode button.active { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.local-settings { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; font-size: 13px; color: var(--muted);
+  padding: 8px 16px; border-bottom: 1px solid var(--line); }
+.local-settings select, .local-settings input { font-size: 13px; }
+.local-settings input { width: 220px; }

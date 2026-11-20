@@ -6,7 +6,7 @@ import torch
 from PIL import Image, ImageFilter
 from scipy import ndimage
 
-from . import config, models, translit
+from . import config, models, textproc, translit
 from .regions import mask_bbox
 
 
@@ -27,21 +27,13 @@ def crop_for_ocr(image, region):
     return up.filter(ImageFilter.SHARPEN)
 
 
-# Credits and signatures look like text but shouldn't be transliterated. The signature
-# is often misread ("by HATTERSON"), so any lone "by <name> [year]" counts as a credit.
-SKIP_TEXT = re.compile(
-    r"\b[wh]?at+[ae]?rs[oa]n\b|wattsin|syndicat|distributed by|universal press|andrews mc ?meel|copyright|©"
-    r"|^by \S+( \S*\d{4})?$"
-    r"|^(no text|empty|none|n/a)\.?$",
-    re.I,
-)
+_clean = textproc.clean
+SKIP_TEXT = textproc.SKIP_TEXT
+SUFFIXES = textproc.SUFFIXES
 
 
-def _clean(text):
-    text = " ".join(text.strip().strip('"').split())
-    if SKIP_TEXT.search(text):
-        return ""
-    return text if any(ch.isalpha() for ch in text) else ""
+def join_lines(text):
+    return textproc.join_lines(text, translit.engine().dictionary)
 
 
 def moondream(crops):
@@ -86,29 +78,6 @@ def florence(crops):
         lines = [l.replace("</s>", "").replace("<s>", "").strip() for l in lines]
         out.append(_clean(translit.recase(join_lines("\n".join(l for l in lines if l)))))
     return out
-
-
-SUFFIXES = {"s", "es", "ed", "d", "ing", "er", "ers", "est", "ly", "y", "tion", "tions", "ment", "ness", "able", "ful"}
-
-
-def join_lines(text):
-    """
-    Join OCR'd lines. A word hyphenated across a line break is re-joined when the
-    second half is a common suffix or the dictionary knows the whole word
-    ("PAINT-/ED" -> "painted"); otherwise the hyphen stays ("BRAND-/NEW").
-    """
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    joined = ""
-    for line in lines:
-        m = re.search(r"(\w+)-$", joined)
-        first = re.match(r"\w+", line)
-        if m and first:
-            merge = first.group(0).lower() in SUFFIXES or translit.known_word(m.group(1) + first.group(0))
-            joined = (joined[:-1] if merge else joined) + line
-        else:
-            joined = f"{joined} {line}" if joined else line
-    # OCR often puts a space before closing punctuation ("HERE !")
-    return re.sub(r"\s+([!?.,;:])", r"\1", joined)
 
 
 GROQ_URL = "https://api.groq.com/openai/v1"

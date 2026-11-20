@@ -318,6 +318,27 @@ def render(job_id: str, stage: str = "final"):
                     headers={"Cache-Control": "no-store", "X-Font-Sizes": sizes})
 
 
+# Files the in-browser ("this device") mode downloads; nothing else is exposed
+ASSETS = {
+    "comictextdetector.onnx": config.CTD_MODEL,
+    "shaw.py": config.SHAW_SCRIPT,
+    "textproc.py": config.SRC_DIR / "shavcomic" / "textproc.py",
+    "amer.dict": config.DICT_DIR / "amer.dict",
+    "brit.dict": config.DICT_DIR / "brit.dict",
+    "nltk-tagger-weights.json": config.MODEL_DIR / "nltk_data/taggers/averaged_perceptron_tagger_eng/averaged_perceptron_tagger_eng.weights.json",
+    "nltk-tagger-tagdict.json": config.MODEL_DIR / "nltk_data/taggers/averaged_perceptron_tagger_eng/averaged_perceptron_tagger_eng.tagdict.json",
+    "nltk-tagger-classes.json": config.MODEL_DIR / "nltk_data/taggers/averaged_perceptron_tagger_eng/averaged_perceptron_tagger_eng.classes.json",
+}
+
+
+@app.get("/assets/{name}")
+def asset(name: str):
+    path = ASSETS.get(name)
+    if path is None or not path.exists():
+        raise HTTPException(404)
+    return FileResponse(path, headers={"Cache-Control": "public, max-age=86400"})
+
+
 @app.get("/fonts/{name}")
 def font_file(name: str):
     path = config.FONT_DIR / Path(name).name

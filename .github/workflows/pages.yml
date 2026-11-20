@@ -1,13 +1,15 @@
-# Publishes the web tool's front end (src/web/) to GitHub Pages, pointed at the
-# API on the Hugging Face Space. Set the Space's URL as the repository variable
-# SHAVIAN_API (Settings > Secrets and variables > Actions > Variables), and set
-# Settings > Pages > Source to "GitHub Actions".
+# Publishes the web tool to GitHub Pages as a fully static site: everything runs in
+# the visitor's browser ("This device" mode). The models and dictionary are
+# downloaded here at build time (checksums verified) into the site, not committed.
+#
+# Optional: set the repository variable SHAVIAN_API to a server's URL to also offer
+# "Server" mode. Settings > Pages > Source must be "GitHub Actions".
 name: Pages
 
 on:
   push:
     branches: [main]
-    paths: ["src/web/**", ".github/workflows/pages.yml"]
+    paths: ["src/web/**", "src/shaw.py", "src/shavcomic/textproc.py", ".github/workflows/pages.yml"]
   workflow_dispatch:
 
 permissions:
@@ -27,15 +29,48 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+
       - name: Assemble site
         env:
           SHAVIAN_API: ${{ vars.SHAVIAN_API }}
         run: |
-          mkdir -p _site/web
+          set -euo pipefail
+          mkdir -p _site/web/local _site/assets
           cp src/web/index.html _site/
           cp src/web/*.js src/web/*.css _site/web/
-          printf 'window.SHAVIAN_API = window.SHAVIAN_API || %s;\n' "\"${SHAVIAN_API}\"" > _site/web/config.js
+          cp src/web/local/*.js _site/web/local/
+          cp src/shaw.py src/shavcomic/textproc.py _site/assets/
+
+          fetch() {  # url, output, sha256 (empty = unpinned)
+            curl -sSfL "$1" -o "$2"
+            if [ -n "${3:-}" ]; then echo "$3  $2" | sha256sum -c -; fi
+          }
+          fetch https://github.com/zyddnys/manga-image-translator/releases/download/beta-0.3/comictextdetector.pt.onnx \
+            _site/assets/comictextdetector.onnx 1a86ace74961413cbd650002e7bb4dcec4980ffa21b2f19b86933372071d718f
+          fetch https://dechifro.org/shavian/amer.dict.xz amer.dict.xz
+          xz -dc amer.dict.xz > _site/assets/amer.dict
+          fetch https://raw.githubusercontent.com/nltk/nltk_data/gh-pages/packages/taggers/averaged_perceptron_tagger_eng.zip \
+            tagger.zip 6025f530624335c67d6547d44757b357b4e79bae030a0383e9887a92c1718f0b
+          unzip -q tagger.zip
+          for part in weights tagdict classes; do
+            cp averaged_perceptron_tagger_eng/averaged_perceptron_tagger_eng.$part.json _site/assets/nltk-tagger-$part.json
+          done
+          fetch https://2gd4.me/tidbit/shavian-fonts/backlogshavian.otf _site/assets/backlogshavian.otf \
+            9575619c156fadd005dc2aac065c3a780738c86563ac5c4d3ccd390b038339ec
+
+          {
+            echo 'window.SHAVIAN_ASSETS = "assets";'
+            echo 'window.SHAVIAN_FONT_URL = "assets/backlogshavian.otf";'
+            echo 'window.SHAVIAN_DEFAULT_MODE = "local";'
+            if [ -n "${SHAVIAN_API}" ]; then
+              printf 'window.SHAVIAN_API = "%s";\n' "${SHAVIAN_API}"
+            else
+              echo 'window.SHAVIAN_NO_SERVER = true;'
+            fi
+          } > _site/web/config.js
           cat _site/web/config.js
+          du -sh _site/assets/*
+
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

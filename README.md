@@ -14,6 +14,8 @@ uv run python src/server.py              # web tool at http://127.0.0.1:8765 (ad
 uv run python tools/regress.py [REF]     # what did my change do to the test strips? (vs REF, default HEAD)
 ```
 
+**Server or this device.** The web tool's switch picks where the work happens. "This device" runs the whole pipeline in the browser with no server: comic-text-detector via ONNX Runtime Web, Florence-2 OCR via transformers.js (or Groq with your own key), and dechifro's `shaw.py` itself via Pyodide (with NLTK tagging). Models download on first use (~400 MB) and are cached; WebGPU, caching and multi-threading need HTTPS. That makes the tool hostable as a plain static site: `.github/workflows/pages.yml` publishes it to GitHub Pages with the models fetched at build time.
+
 The web tool lets you drop in a comic, then check and correct every stage: switch regions on or off (sound effects and logos are found but off by default), fix the English (re-transliterated as you go) or the Shavian directly, draw a box around text that was missed, pick the eraser and font size per region, and download the result. The page in `src/web/` only talks to the server's `/api/`, so it can be hosted separately and pointed at a server with `?api=https://your-server`.
 
 Each stage has interchangeable backends (`uv run python src/shavian-comics.py --help`):

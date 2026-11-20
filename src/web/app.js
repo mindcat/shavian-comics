@@ -7,11 +7,44 @@ const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 
 const state = { job: null, regions: new Map(), view: "regions", selected: null, drawing: false,
-                renderToken: 0, urls: {}, dirty: true };
+                renderToken: 0, urls: {}, dirty: true,
+                mode: localStorage.getItem("shavian-mode") || (window.SHAVIAN_DEFAULT_MODE || "server") };
+
+// ------------------------------------------------------------------ "this device" mode
+// Where the in-browser pipeline downloads its files from: config.js can point these
+// elsewhere (e.g. a Hugging Face repo when the page is on GitHub Pages)
+const ASSET_BASE = (window.SHAVIAN_ASSETS || `${API || location.origin}/assets`).replace(/[/]$/, "");
+const ASSETS = {
+  ctd: `${ASSET_BASE}/comictextdetector.onnx`, shaw: `${ASSET_BASE}/shaw.py`, textproc: `${ASSET_BASE}/textproc.py`,
+  dict: `${ASSET_BASE}/amer.dict`, font: window.SHAVIAN_FONT_URL || `${API}/fonts/backlogshavian.otf`,
+  nltk: { weights: `${ASSET_BASE}/nltk-tagger-weights.json`, tagdict: `${ASSET_BASE}/nltk-tagger-tagdict.json`,
+          classes: `${ASSET_BASE}/nltk-tagger-classes.json` },
+};
+let localBackend = null;
+async function local() {
+  if (!localBackend) {
+    const { LocalBackend } = await import(new URL("web/local/backend.js", document.baseURI).href);
+    localBackend = new LocalBackend(ASSETS);
+    localBackend.onProgress = ({ what, loaded, total }) =>
+      busy(total ? `downloading ${what}: ${Math.round(100 * loaded / total)}%` : `loading ${what}…`);
+  }
+  return localBackend;
+}
+
+function setMode(mode) {
+  if (mode === state.mode && state.modeShown) return;
+  state.mode = mode;
+  state.modeShown = true;
+  localStorage.setItem("shavian-mode", mode);
+  $$("#mode button").forEach(b => b.classList.toggle("active", b.dataset.mode === mode));
+  $("#local-settings").hidden = mode !== "local";
+  if (state.job) reset();
+  pollStatus();
+}
 
 // ------------------------------------------------------------------ API helpers
 async function api(path, opts = {}) {
-  const res = await fetch(API + path, opts);
+  const res = state.mode === "local" ? await (await local()).fetch(path, opts) : await fetch(API + path, opts);
   if (!res.ok) {
     let msg = res.statusText;
     try { msg = (await res.json()).detail || msg; } catch {}
@@ -24,7 +57,7 @@ const json = (path, method = "GET", body) =>
     method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then(r => r.json());
 
 // Shavian font comes from the server, so it works when the page is hosted elsewhere
-new FontFace("Backlog Shavian", `url(${API}/fonts/backlogshavian.otf)`).load()
+new FontFace("Backlog Shavian", `url(${window.SHAVIAN_FONT_URL || `${API}/fonts/backlogshavian.otf`})`).load()
   .then(f => document.fonts.add(f)).catch(() => {});
 
 // ------------------------------------------------------------------ status
@@ -34,16 +67,18 @@ async function pollStatus() {
     const info = await json("/api/info");
     state.info = info;
     if (info.ready) {
-      el.textContent = `ready · ${info.device} · OCR ${info.ocr.split("/").pop()} · ${info.dictionary} dictionary`;
+      el.textContent = info.local
+        ? `on this device · OCR ${info.ocr} · models download on first use and are cached`
+        : `ready · ${info.device} · OCR ${info.ocr.split("/").pop()} · ${info.dictionary} dictionary`;
       showAllowance(info.uploads_left, info.uploads_per_day);
       el.className = "status ready";
       return;
     }
     el.textContent = `loading models: ${info.loading}…`;
   } catch {
-    el.textContent = "can't reach the server";
+    el.textContent = "can't reach the server · try “This device”";
   }
-  setTimeout(pollStatus, 2000);
+  if (state.mode === "server") setTimeout(pollStatus, 2000);
 }
 
 function step(name, how) {
@@ -95,7 +130,7 @@ async function upload(file) {
     alert(`Upload failed: ${e.message}`);
     return reset();
   }
-  state.urls.original = `${API}/api/jobs/${state.job.id}/original.png`;
+  if (state.mode === "server") state.urls.original = `${API}/api/jobs/${state.job.id}/original.png`;
   if (state.info) showAllowance(state.job.uploads_left, state.info.uploads_per_day);
   state.job.regions.forEach(r => state.regions.set(r.id, r));
   step("detect", "done");
@@ -401,6 +436,25 @@ async function download() {
 }
 
 // ------------------------------------------------------------------ wiring
+function setupMode() {
+  if (window.SHAVIAN_NO_SERVER) {  // e.g. GitHub Pages without a server: always in the browser
+    state.mode = "local";
+    $("#mode").hidden = true;
+  }
+  $$("#mode button").forEach(b => b.addEventListener("click", () => setMode(b.dataset.mode)));
+  const ocrSel = $("#local-ocr"), key = $("#groq-key");
+  ocrSel.value = localStorage.getItem("shavian-local-ocr") || "florence";
+  key.value = localStorage.getItem("shavian-groq-key") || "";
+  $("#groq-row").hidden = ocrSel.value !== "groq";
+  ocrSel.addEventListener("change", () => {
+    localStorage.setItem("shavian-local-ocr", ocrSel.value);
+    $("#groq-row").hidden = ocrSel.value !== "groq";
+    pollStatus();
+  });
+  key.addEventListener("change", () => localStorage.setItem("shavian-groq-key", key.value.trim()));
+  setMode(state.mode);
+}
+
 function setup() {
   $("#pick").addEventListener("click", () => $("#file").click());
   $("#file").addEventListener("change", e => upload(e.target.files[0]));
@@ -419,6 +473,6 @@ function setup() {
   $("#download").addEventListener("click", download);
   $("#overlay").addEventListener("click", () => { if (!state.drawing) select(null); });
   setupDrawing();
-  pollStatus();
+  setupMode();
 }
 setup();
