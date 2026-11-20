@@ -46,3 +46,4 @@ __pycache__/
 
 # Assembled Hugging Face Space
 /deploy/space-build/
+/deploy/pages-build/

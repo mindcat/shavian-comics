@@ -1,3 +1,4 @@
+[hidden] { display: none !important; }  /* the hidden attribute always wins over display rules */
 
 :root {
   --bg: #f5f4f0; --panel: #fff; --ink: #1d1d1b; --muted: #6b6a66; --line: #dcdad3;
@@ -75,7 +76,6 @@ input[type=number] { width: 64px; }
 .card.empty .field, .card.empty .opts { display: none; }
 .card.empty.open .field, .card.empty.open .opts { display: block; }
 .card.empty.open .opts { display: flex; }
-.card.empty .note::after { content: " · no text found (tap to edit)"; }
 #allowance { font-weight: 600; color: var(--accent); }
 #allowance.none-left { color: #b5472f; }
 .header-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
@@ -90,3 +90,8 @@ input[type=number] { width: 64px; }
 .resume { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; background: var(--panel); border: 1px solid var(--line);
   border-radius: 8px; padding: 8px 12px; margin: 0 0 12px; font-size: 14px; }
 .regions-head span { display: inline-flex; gap: 12px; }
+/* Shavian interface: a clean Shavian typeface for the UI (comics keep their lettering font) */
+body.ui-shaw { font-family: "Noto Sans Shavian", system-ui, -apple-system, "Segoe UI", sans-serif; }
+body.ui-shaw .title-en { display: none; }
+.title-shaw { font-family: "Backlog Shavian", "Noto Sans Shavian", sans-serif; font-weight: 400; }
+.lang { font-family: "Noto Sans Shavian", system-ui, sans-serif; border-radius: 999px; padding: 4px 12px; font-size: 13px; }

@@ -3,64 +3,68 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Shavian Comics</title>
+<title>Shavian Comics · ·𐑖𐑱𐑝𐑾𐑯 𐑒𐑪𐑥𐑦𐑒𐑕</title>
+<meta name="description" content="Transliterate comics into the Shavian alphabet, right in your browser.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+Shavian&display=swap">
 <link rel="stylesheet" href="web/style.css">
 </head>
 <body>
 <header>
-  <h1>Shavian Comics <span class="shaw">·𐑖𐑱𐑝𐑾𐑯</span></h1>
+  <h1><span class="title-en">Shavian Comics</span> <span class="title-shaw">·𐑖𐑱𐑝𐑾𐑯 𐑒𐑪𐑥𐑦𐑒𐑕</span></h1>
   <div class="header-right">
-    <div id="mode" class="mode" role="group" aria-label="Where it runs">
-      <button data-mode="server" title="Process on the server">Server</button>
-      <button data-mode="local" title="Process everything in this browser: no server needed">This device</button>
+    <button id="lang" class="lang" data-i18n-title="lang_switch_title">·𐑖𐑱𐑝𐑾𐑯</button>
+    <div id="mode" class="mode" role="group" data-i18n-aria="mode_group">
+      <button data-mode="server" data-i18n="mode_server" data-i18n-title="mode_server_title">Server</button>
+      <button data-mode="local" data-i18n="mode_local" data-i18n-title="mode_local_title">This device</button>
     </div>
-    <div id="status" class="status">connecting…</div>
+    <div id="status" class="status" data-i18n="connecting">connecting…</div>
   </div>
 </header>
 <section id="local-settings" class="local-settings" hidden>
-  <label>Read text with
+  <label><span data-i18n="read_with">Read text with</span>
     <select id="local-ocr">
-      <option value="florence">Florence-2 on this device (offline, ~270 MB once)</option>
-      <option value="florence-small">Florence-2, smaller: for phones (offline, ~210 MB once)</option>
-      <option value="groq">Groq, with your own API key (better, online)</option>
+      <option value="florence" data-i18n="ocr_florence">Florence-2 on this device (offline, ~270 MB once)</option>
+      <option value="florence-small" data-i18n="ocr_florence_small">Florence-2, smaller: for phones (offline, ~210 MB once)</option>
+      <option value="groq" data-i18n="ocr_groq">Groq, with your own API key (better, online)</option>
     </select></label>
-  <label id="groq-row" hidden>Groq key <input id="groq-key" type="password" autocomplete="off" placeholder="gsk_…">
-    <span class="hint">kept only in this browser; text crops are sent to Groq</span></label>
+  <label id="groq-row" hidden><span data-i18n="groq_key">Groq key</span>
+    <input id="groq-key" type="password" autocomplete="off" placeholder="gsk_…">
+    <span class="hint" data-i18n="groq_hint">kept only in this browser; text crops are sent to Groq</span></label>
 </section>
-
 <main>
   <p id="crash-note" class="crash-note" hidden></p>
   <p id="resume" class="resume" hidden>
-    Last comic on this device: <b id="resume-name"></b>
-    <button id="resume-btn" class="primary">Resume it</button>
+    <span data-i18n="resume_last">Last comic on this device:</span> <b id="resume-name"></b>
+    <button id="resume-btn" class="primary" data-i18n="resume_btn">Resume it</button>
     <span id="resume-hint" class="hint"></span>
   </p>
   <section id="drop" class="drop">
     <input id="file" type="file" accept="image/*" hidden>
-    <p><strong>Drop a comic here</strong>, paste one, or <button id="pick" class="link">choose a file</button>.</p>
-    <p class="hint">Text is found, read and transliterated automatically; you can then fix anything below.</p>
+    <p><strong data-i18n="drop_main">Drop a comic here</strong><span data-i18n="drop_or">, paste one, or</span>
+      <button id="pick" class="link" data-i18n="drop_choose">choose a file</button>.</p>
+    <p class="hint" data-i18n="drop_hint">Text is found, read and transliterated automatically; you can then fix anything below.</p>
     <p id="allowance" class="hint" hidden></p>
   </section>
-
   <section id="work" hidden>
     <div id="steps" class="steps">
-      <span data-step="detect">1 · Find text</span>
-      <span data-step="read">2 · Read</span>
-      <span data-step="render">3 · Typeset</span>
+      <span data-step="detect" data-i18n="step_detect">1 · Find text</span>
+      <span data-step="read" data-i18n="step_read">2 · Read</span>
+      <span data-step="render" data-i18n="step_render">3 · Typeset</span>
     </div>
-
     <div class="layout">
       <div class="viewer-col">
         <div class="toolbar">
           <div class="tabs" role="tablist">
-            <button data-view="original">Original</button>
-            <button data-view="regions" class="active">Regions</button>
-            <button data-view="erased">Erased</button>
-            <button data-view="final">Shavian</button>
+            <button data-view="original" data-i18n="tab_original">Original</button>
+            <button data-view="regions" class="active" data-i18n="tab_regions">Regions</button>
+            <button data-view="erased" data-i18n="tab_erased">Erased</button>
+            <button data-view="final" data-i18n="tab_final">Shavian</button>
           </div>
           <div class="actions">
-            <button id="addbox" title="Drag a box over text that was missed">+ Box</button>
-            <button id="download" class="primary" disabled>Download</button>
+            <button id="addbox" data-i18n="addbox" data-i18n-title="addbox_title">+ Box</button>
+            <button id="download" class="primary" disabled data-i18n="download">Download</button>
           </div>
         </div>
         <div id="viewer" class="viewer">
@@ -68,16 +72,17 @@
           <svg id="overlay" xmlns="http://www.w3.org/2000/svg"></svg>
           <div id="busy" class="busy" hidden></div>
         </div>
-        <p class="legend"><i class="sw bubble"></i>bubble <i class="sw free"></i>text on artwork
-          <i class="sw off"></i>skipped (tick to include) · tap a region to edit it</p>
+        <p class="legend"><i class="sw bubble"></i><span data-i18n="legend_bubble">bubble</span>
+          <i class="sw free"></i><span data-i18n="legend_free">text on artwork</span>
+          <i class="sw off"></i><span data-i18n="legend_off">skipped (tick to include)</span> ·
+          <span data-i18n="legend_tap">tap a region to edit it</span></p>
       </div>
-
       <div class="regions-col">
         <div class="regions-head">
-          <h2>Regions <span id="count"></span></h2>
+          <h2><span data-i18n="regions">Regions</span> <span id="count"></span></h2>
           <span>
             <button id="read-rest" class="link" hidden></button>
-            <button id="another" class="link">new comic</button>
+            <button id="another" class="link" data-i18n="another">new comic</button>
           </span>
         </div>
         <div id="regions"></div>
@@ -85,30 +90,29 @@
     </div>
   </section>
 </main>
-
 <template id="card">
   <article class="card">
     <div class="card-head">
       <label><input type="checkbox" class="enabled"> <b class="num"></b></label>
       <span class="kind"></span>
       <span class="note"></span>
-      <button class="del link" title="Remove this region">remove</button>
+      <button class="del link" data-i18n="remove" data-i18n-title="remove_title">remove</button>
     </div>
-    <label class="field">English <textarea class="english" rows="2" placeholder="(not read yet)"></textarea></label>
-    <label class="field">Shavian <textarea class="shavian shaw" rows="2"></textarea></label>
+    <label class="field"><span data-i18n="english">English</span> <textarea class="english" rows="2"></textarea></label>
+    <label class="field"><span data-i18n="shavian">Shavian</span> <textarea class="shavian shaw" rows="2"></textarea></label>
     <div class="opts">
-      <label>Erase <select class="eraser">
-        <option value="auto">auto</option><option value="fill">flat fill</option>
+      <label><span data-i18n="erase">Erase</span> <select class="eraser">
+        <option value="auto" data-i18n="eraser_auto">auto</option><option value="fill" data-i18n="eraser_fill">flat fill</option>
         <option value="lama">LaMa</option><option value="telea">OpenCV</option></select></label>
-      <label>Size <select class="size">
-        <option value="match">match original</option><option value="fit">as big as fits</option>
-        <option value="custom">custom…</option></select></label>
+      <label><span data-i18n="size">Size</span> <select class="size">
+        <option value="match" data-i18n="size_match">match original</option><option value="fit" data-i18n="size_fit">as big as fits</option>
+        <option value="custom" data-i18n="size_custom">custom…</option></select></label>
       <input class="px" type="number" min="6" max="200" step="1" hidden> <span class="fs"></span>
     </div>
   </article>
 </template>
-
 <script src="web/config.js"></script>
+<script src="web/i18n.js"></script>
 <script src="web/app.js"></script>
 </body>
 </html>
