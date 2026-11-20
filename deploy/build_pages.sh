@@ -54,6 +54,5 @@ done
   echo 'window.SHAVIAN_DEFAULT_MODE = "local";'
   if [ -n "$API" ]; then printf 'window.SHAVIAN_API = "%s";\n' "$API"; else echo 'window.SHAVIAN_NO_SERVER = true;'; fi
 } > "$OUT/web/config.js"
-touch "$OUT/.nojekyll"
 echo "Pages site assembled in $OUT:"
 (cd "$OUT" && du -ah . | sort -k2 | grep -v '^\S*\s*\.$')
